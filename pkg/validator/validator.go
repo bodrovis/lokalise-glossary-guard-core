@@ -7,7 +7,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/bodrovis/lokalise-glossary-guard-core/internal/checks"
+	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
 var ErrValidationFailed = errors.New("validation failed")

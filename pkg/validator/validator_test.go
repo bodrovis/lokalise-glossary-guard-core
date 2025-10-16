@@ -7,7 +7,7 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/bodrovis/lokalise-glossary-guard-core/internal/checks"
+	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
 /*** test doubles ***/
