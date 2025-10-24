@@ -15,32 +15,38 @@ func fixCSVExt(ctx context.Context, a checks.Artifact) (checks.FixResult, error)
 		return checks.FixResult{}, err
 	}
 
-	fp := strings.TrimSpace(a.Path)
+	orig := a.Path
+	fp := strings.TrimSpace(orig)
 	if fp == "" {
 		return checks.FixResult{
 			Data:      a.Data,
-			Path:      a.Path,
+			Path:      "", // keep original (empty)
 			DidChange: false,
 			Note:      "empty path: nothing to fix",
 		}, nil
 	}
 
-	ext := filepath.Ext(fp)
-	base := strings.TrimSuffix(fp, ext)
-	// avoid "name..csv" when original had a trailing dot like "name."
-	base = strings.TrimRight(base, ".")
+	ext := filepath.Ext(fp)             // ".txt" | ".CSV" | ""
+	base := strings.TrimSuffix(fp, ext) // "name" | "archive.tar"
+	base = strings.TrimRight(base, ".") // "name." -> "name"
 
 	newPath := base + ".csv"
-	changed := newPath != a.Path
+	changed := newPath != fp // сравниваем с уже trim'нутым входом
 
 	note := "already has .csv extension"
 	if changed {
 		note = "renamed to .csv"
 	}
 
+	// ВАЖНО: Path пустой когда нет изменений — это "keep original"
+	outPath := ""
+	if changed {
+		outPath = newPath
+	}
+
 	return checks.FixResult{
 		Data:      a.Data,
-		Path:      newPath,
+		Path:      outPath,
 		DidChange: changed,
 		Note:      note,
 	}, nil

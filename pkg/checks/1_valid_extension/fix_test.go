@@ -19,7 +19,7 @@ func TestFixCSVExt_BasicCases(t *testing.T) {
 		wantNote   string
 	}
 	cases := []tc{
-		{path: "file.csv", wantPath: "file.csv", wantChange: false, wantNote: "already has .csv extension"},
+		{path: "file.csv", wantPath: "", wantChange: false, wantNote: "already has .csv extension"},
 		{path: "file.txt", wantPath: "file.csv", wantChange: true, wantNote: "renamed to .csv"},
 		{path: "report.CSV", wantPath: "report.csv", wantChange: true, wantNote: "renamed to .csv"},
 		{path: "dir/name.tsv", wantPath: "dir/name.csv", wantChange: true, wantNote: "renamed to .csv"},

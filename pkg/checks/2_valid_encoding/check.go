@@ -10,91 +10,71 @@ import (
 
 const checkName = "ensure-utf8-encoding"
 
-var fixer checks.FixFunc = fixUTF8
-
 func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
 		runUTF8Check,
 		checks.WithFailFast(),
 		checks.WithPriority(2),
-		checks.WithRecover(),
 	)
 	if err != nil {
-		panic("ensure_utf8: " + err.Error())
+		panic(checkName + ": " + err.Error())
 	}
 	if _, err := checks.Register(ch); err != nil {
-		panic("ensure_utf8 register: " + err.Error())
+		panic(checkName + " register: " + err.Error())
 	}
 }
 
-// Run orchestrates validation → optional fix → optional re-validation.
+// runUTF8Check wires the recipe: validate → maybe fix → maybe revalidate.
+// NOTE: FailAs omitted → defaults to FAIL (works well with FailFast).
 func runUTF8Check(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
 		Validate:         validateUTF8,
-		Fix:              fixer,
+		Fix:              fixUTF8, // will implement in fix.go
 		PassMsg:          "file encoding is valid UTF-8",
 		FixedMsg:         "encoding fixed to valid UTF-8",
 		AppliedMsg:       "auto-fix applied",
-		StatusAfterFixed: checks.Pass,
+		StatusAfterFixed: checks.Pass, // trust the recode → PASS
 	})
 }
 
-// validateUTF8 does only validation, no side effects.
+// validateUTF8 inspects bytes and reports first invalid position (if any).
+// It’s panic-safe via RunWithFix’s safeValidate wrapper.
 func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
-		}
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
 	data := a.Data
 	if len(data) == 0 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "empty file: cannot determine encoding",
-			Err: nil,
-		}
+		// policy choice: empty file = cannot determine → FAIL (not ERROR)
+		return checks.ValidationResult{OK: false, Msg: "empty file: cannot determine encoding"}
 	}
 
+	// Fast path: entirely valid
 	if utf8.Valid(data) {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "",
-			Err: nil,
-		}
+		return checks.ValidationResult{OK: true}
 	}
 
-	const checkEvery = 1 << 16
-	i := 0
-	for i < len(data) {
+	// Find the first offending byte for a nicer message.
+	const checkEvery = 1 << 16 // periodically check ctx for large blobs
+	for i := 0; i < len(data); {
 		if (i & (checkEvery - 1)) == 0 {
 			if err := ctx.Err(); err != nil {
-				return checks.ValidationResult{
-					OK:  false,
-					Msg: "validation cancelled",
-					Err: err,
-				}
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 			}
 		}
 		r, size := utf8.DecodeRune(data[i:])
-
 		if r == utf8.RuneError && size == 1 {
 			return checks.ValidationResult{
 				OK:  false,
 				Msg: fmt.Sprintf("invalid UTF-8 at byte %d of %d", i, len(data)),
-				Err: nil,
 			}
 		}
 		i += size
 	}
 
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "invalid UTF-8",
-		Err: nil,
-	}
+	// If we got here, we saw RuneError with size>1 somewhere (rare), or mixed state; still invalid.
+	return checks.ValidationResult{OK: false, Msg: "invalid UTF-8"}
 }

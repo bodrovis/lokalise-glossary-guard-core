@@ -3,9 +3,10 @@ package checks
 import "context"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Status & results (unchanged)
+// Status & results (unchanged semantics)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Status is the per-check outcome category.
 type Status string
 
 const (
@@ -15,6 +16,7 @@ const (
 	Error Status = "ERROR"
 )
 
+// FixMode controls whether the runner is allowed to attempt auto-fixes.
 type FixMode int
 
 const (
@@ -24,20 +26,22 @@ const (
 	FixAlways                   // attempt fixes for all checks that support it
 )
 
+// RunOptions are runner-level knobs that each check receives.
 type RunOptions struct {
-	FixMode       FixMode // runner-level policy
-	RerunAfterFix bool    // if true, re-run the same check after a successful fix
-	HardFailOnErr bool    // if true, any remaining ERROR yields overall ERROR
+	FixMode       FixMode // fix policy
+	RerunAfterFix bool    // if true, re-run validation after a successful fix
+	HardFailOnErr bool    // if true, a single ERROR may abort the whole pipeline (runner decides)
 }
 
-// CheckResult is the outcome of a single validation run.
+// CheckResult is a single validation outcome (no fix application info here).
 type CheckResult struct {
-	Name    string // name of the check that produced this result
+	Name    string // check name that produced this result
 	Status  Status // PASS, WARN, FAIL or ERROR
 	Message string // human-readable description or diagnostic info
 }
 
-// FixResult is the result of an automatic fix attempt.
+// FixResult describes what an auto-fix did to the artifact (if anything).
+// NOTE: Data/Path represent the NEW state to propagate downstream.
 type FixResult struct {
 	Data      []byte // new file data after fix (may be identical to input)
 	Path      string // new file path; empty means "keep original"
@@ -45,12 +49,14 @@ type FixResult struct {
 	Note      string // optional description of what was fixed
 }
 
-// Combined per-check outcome (validation + optional fix-applied state).
+// CheckOutcome = validation result + final artifact state after optional fix.
 type CheckOutcome struct {
-	Result CheckResult // validation result
+	Result CheckResult
 	Final  FixResult
 }
 
+// ValidationResult is the contract for ValidateFunc.
+// If Err != nil, this is considered a system-level error (usually reported as ERROR).
 type ValidationResult struct {
 	OK  bool
 	Msg string
@@ -61,6 +67,8 @@ type ValidationResult struct {
 // Artifact
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Artifact is the unit flowing through checks (e.g., one CSV file).
+// The same Artifact (possibly mutated by a fix) is propagated to the next check.
 type Artifact struct {
 	Data  []byte
 	Path  string
@@ -71,42 +79,43 @@ type Artifact struct {
 // Functional types
 // ─────────────────────────────────────────────────────────────────────────────
 
-// CheckFunc: single-check runner
+// CheckFunc executes a check. It MUST always return the Final Data/Path to propagate.
 type CheckFunc func(ctx context.Context, a Artifact, opts RunOptions) CheckOutcome
 
-// FixFunc: optional internal fixer used by adapters/runners, not exposed via interface.
+// FixFunc is an optional internal fixer; not exposed via interface.
+// It returns the new artifact state (FixResult) or an error.
 type FixFunc func(ctx context.Context, a Artifact) (FixResult, error)
 
-// ValidateFunc performs validation on the given artifact.
-// It must return (ok, message), where message is a human-readable diagnostic.
+// ValidateFunc performs validation on the given artifact and returns a tri-state result.
 type ValidateFunc func(ctx context.Context, a Artifact) ValidationResult
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Adapter & options (types only)
+// Adapter & options (types only; no behavior/recover here)
 // ─────────────────────────────────────────────────────────────────────────────
 
+// CheckAdapter wires a CheckFunc (+ optional FixFunc) into the CheckUnit interface.
+// Any panic recovery is implemented in helper/adapter code, NOT in this type file.
 type CheckAdapter struct {
-	name       string
-	failFast   bool
-	priority   int
-	run        CheckFunc // main entry the runner will call
-	fix        FixFunc   // optional internal fixer (kept private to the interface)
-	useRecover bool
+	name     string
+	failFast bool
+	priority int
+	run      CheckFunc // main entry the runner will call
+	fix      FixFunc   // optional internal fixer (kept private to the interface)
 }
 
-// Option configures a CheckAdapter.
+// Option configures a CheckAdapter (priority, fail-fast, attach fix, etc.).
 type Option func(*CheckAdapter)
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Check interface (public contract)
+// Public check contract
 // ─────────────────────────────────────────────────────────────────────────────
 
 type CheckUnit interface {
 	// Name returns a human-readable identifier of the check.
 	Name() string
 
-	// Run performs validation and, if doFix is true, may apply a fix internally.
-	// It must always return the output Data/Path to propagate (even if unchanged).
+	// Run performs validation and may apply a fix internally based on RunOptions.
+	// It MUST always return the output Data/Path to propagate (even if unchanged).
 	Run(ctx context.Context, a Artifact, opts RunOptions) CheckOutcome
 
 	// FailFast marks this check as critical — if it fails, the runner may stop further validation.
@@ -120,15 +129,18 @@ type CheckUnit interface {
 // Errors (types only)
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ErrNoFix is returned when an internal fixer is absent or intentionally disabled.
+// ErrNoFix indicates there is no fixer implemented or it is intentionally disabled.
 var ErrNoFix = &noFixError{}
 
 type noFixError struct{}
 
 func (e *noFixError) Error() string { return "no fix implemented for this check" }
 
-// RunRecipe defines a standard "validate → maybe fix → maybe revalidate" pattern
-// for building consistent checks with optional auto-fix support.
+// ─────────────────────────────────────────────────────────────────────────────
+// RunRecipe: declarative "validate → maybe fix → maybe revalidate" contract
+// (execution logic lives in run_recipe.go, not here)
+// ─────────────────────────────────────────────────────────────────────────────
+
 type RunRecipe struct {
 	Name     string
 	Validate ValidateFunc // required
@@ -139,10 +151,10 @@ type RunRecipe struct {
 	AppliedMsg  string // message when fix applied without re-validation
 	StillBadMsg string // message/prefix when fix applied but still invalid
 
-	// Default failure status (FAIL if not set). Set to ERROR for system-level failures.
+	// Default failure status (FAIL if not set). Use ERROR for system-level failures you want to surface.
 	FailAs Status
 
-	// Status to report when fix succeeded and re-validation passed.
-	// If empty, defaults to WARN. Set to PASS if you want "fixed → PASS".
+	// Status when fix succeeded and re-validation passed.
+	// If empty, defaults to WARN. Set to PASS for "fixed → PASS".
 	StatusAfterFixed Status
 }

@@ -1,4 +1,3 @@
-// pkg/checks/empty_lines/check.go
 package empty_lines
 
 import (
@@ -19,7 +18,6 @@ func init() {
 		checkName,
 		runNoEmptyLines,
 		checks.WithPriority(3),
-		checks.WithRecover(),
 	)
 	if err != nil {
 		panic(checkName + ": " + err.Error())
@@ -37,12 +35,10 @@ func runNoEmptyLines(ctx context.Context, a checks.Artifact, opts checks.RunOpti
 		PassMsg:          "no empty lines detected",
 		FixedMsg:         "empty lines removed",
 		AppliedMsg:       "auto-fix applied (blank lines removed)",
-		StatusAfterFixed: checks.Pass,
-		FailAs:           checks.Warn,
+		StatusAfterFixed: checks.Pass, // we trust the fix → PASS
+		FailAs:           checks.Warn, // invalid but not catastrophic → WARN
 	})
 }
-
-// —————— validation ——————
 
 func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
@@ -57,7 +53,7 @@ func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.Validat
 		}
 	}
 	if total == 0 {
-		return checks.ValidationResult{OK: true}
+		return checks.ValidationResult{OK: true, Msg: ""}
 	}
 	return checks.ValidationResult{
 		OK:  false,
@@ -65,11 +61,16 @@ func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.Validat
 	}
 }
 
-// —————— scanning ——————
+// ─────────────────────────────────────────────────────────────────────────────
+// scanning helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
+// findEmptyLines scans with bufio.Scanner (large buffer) and returns the total
+// number of empty (whitespace-only) lines and up to the first 10 line numbers.
 func findEmptyLines(b []byte) (int, []int, error) {
 	sc := bufio.NewScanner(bytes.NewReader(b))
 
+	// allow long lines (16 MiB per line)
 	const maxLine = 16 << 20
 	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
 
@@ -78,7 +79,6 @@ func findEmptyLines(b []byte) (int, []int, error) {
 
 	for sc.Scan() {
 		line++
-
 		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
 			total++
 			if len(first) < 10 {

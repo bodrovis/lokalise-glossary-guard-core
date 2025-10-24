@@ -19,7 +19,6 @@ func TestEnsureValidExtension_Metadata(t *testing.T) {
 		runEnsureCSV,
 		checks.WithFailFast(),
 		checks.WithPriority(1),
-		checks.WithRecover(),
 	)
 	if err != nil {
 		t.Fatalf("NewCheckAdapter: %v", err)

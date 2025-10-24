@@ -30,17 +30,25 @@ func TestValidate_OrderAndCounters(t *testing.T) {
 	t.Cleanup(checks.Reset)
 
 	// c2 (prio 1): PASS
-	_, _ = checks.Register(mkCheck(t, "c2", 1, false, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
-		return checks.OutcomePass("c2", "ok-1", a)
-	}))
+	_, _ = checks.Register(mkCheck(t, "c2", 1, false,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Pass, "c2", "ok-1", a, "")
+		},
+	))
+
 	// c1 (prio 2): WARN
-	_, _ = checks.Register(mkCheck(t, "c1", 2, false, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
-		return checks.OutcomeWarnKeep("c1", "warn", a, "")
-	}))
+	_, _ = checks.Register(mkCheck(t, "c1", 2, false,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Warn, "c1", "warn", a, "")
+		},
+	))
+
 	// c3 (prio 3): PASS
-	_, _ = checks.Register(mkCheck(t, "c3", 3, false, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
-		return checks.OutcomePass("c3", "ok-3", a)
-	}))
+	_, _ = checks.Register(mkCheck(t, "c3", 3, false,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Pass, "c3", "ok-3", a, "")
+		},
+	))
 
 	sum, err := validator.Validate(context.Background(), "file.csv", []byte("data"), nil, checks.RunOptions{
 		FixMode:       checks.FixNone,
@@ -52,7 +60,11 @@ func TestValidate_OrderAndCounters(t *testing.T) {
 	}
 
 	// order by priority asc: c2, c1, c3
-	gotNames := []string{sum.Outcomes[0].Result.Name, sum.Outcomes[1].Result.Name, sum.Outcomes[2].Result.Name}
+	gotNames := []string{
+		sum.Outcomes[0].Result.Name,
+		sum.Outcomes[1].Result.Name,
+		sum.Outcomes[2].Result.Name,
+	}
 	wantNames := []string{"c2", "c1", "c3"}
 	for i := range wantNames {
 		if gotNames[i] != wantNames[i] {
@@ -76,14 +88,19 @@ func TestValidate_FailFastStopsOnFail(t *testing.T) {
 	t.Cleanup(checks.Reset)
 
 	// fail-fast failing check
-	_, _ = checks.Register(mkCheck(t, "boom-fail", 1, true, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
-		return checks.OutcomeFail("boom-fail", "nope", a)
-	}))
+	_, _ = checks.Register(mkCheck(t, "boom-fail", 1, true,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Fail, "boom-fail", "nope", a, "")
+		},
+	))
+
 	// later check that should NOT run
-	_, _ = checks.Register(mkCheck(t, "later", 2, false, func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
-		t.Fatalf("later check should not run after fail-fast")
-		return checks.CheckOutcome{}
-	}))
+	_, _ = checks.Register(mkCheck(t, "later", 2, false,
+		func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			t.Fatalf("later check should not run after fail-fast")
+			return checks.CheckOutcome{}
+		},
+	))
 
 	sum, err := validator.Validate(context.Background(), "file.csv", []byte("x"), nil, checks.RunOptions{
 		HardFailOnErr: true,
@@ -107,9 +124,11 @@ func TestValidate_FailFastStopsOnError_WithHardFail(t *testing.T) {
 	t.Cleanup(checks.Reset)
 
 	// fail-fast erroring check
-	_, _ = checks.Register(mkCheck(t, "boom-error", 1, true, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
-		return checks.OutcomeError("boom-error", "kaboom", a)
-	}))
+	_, _ = checks.Register(mkCheck(t, "boom-error", 1, true,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Error, "boom-error", "kaboom", a, "")
+		},
+	))
 
 	sum, err := validator.Validate(context.Background(), "file.csv", []byte("x"), nil, checks.RunOptions{
 		HardFailOnErr: true,
@@ -193,7 +212,7 @@ func TestValidate_ContextTimeoutDuringRun(t *testing.T) {
 		case <-time.After(200 * time.Millisecond):
 		case <-ctx.Done():
 		}
-		return checks.OutcomePass("slow", "done", a)
+		return checks.OutcomeKeep(checks.Pass, "slow", "done", a, "")
 	}))
 	_, _ = checks.Register(mkCheck(t, "never", 2, false, func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
 		t.Fatalf("second check should not run due to timeout check between iterations")
