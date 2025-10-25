@@ -68,14 +68,7 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 	}
 
 	lines := splitLinesPreserveAll(raw)
-	if len(lines) == 0 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: no usable content",
-		}
-	}
-
-	headerLineIdx := firstNonEmptyLineIndex(lines)
+	headerLineIdx := checks.FirstNonEmptyLineIndex(lines)
 	if headerLineIdx < 0 {
 		return checks.ValidationResult{
 			OK:  false,
@@ -84,54 +77,48 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 	}
 
 	header := lines[headerLineIdx]
-	cells := strings.Split(header, ";")
 
-	allServiceColsLowercased := true
+	start := 0
+	for i := 0; i <= len(header); i++ {
+		if i == len(header) || header[i] == ';' {
+			cell := header[start:i]
+			start = i + 1
 
-	for _, c := range cells {
-		trimmed := strings.TrimSpace(c)
-		if trimmed == "" {
-			continue
-		}
+			if err := ctx.Err(); err != nil {
+				return checks.ValidationResult{
+					OK:  false,
+					Msg: "validation cancelled",
+					Err: err,
+				}
+			}
 
-		lower := strings.ToLower(trimmed)
+			trimmed := strings.TrimSpace(cell)
+			if trimmed == "" {
+				continue
+			}
 
-		// если колонка вообще не из нужного списка — мы её игнорим полностью
-		_, isRequired := requiredLowercaseCols[lower]
-		if !isRequired {
-			continue
-		}
+			normalized := strings.ToLower(trimmed)
 
-		// колонка является служебной, значит она ДОЛЖНА быть ровно в lowercase
-		if trimmed != lower {
-			allServiceColsLowercased = false
-			break
-		}
-	}
+			if _, isRequired := requiredLowercaseCols[normalized]; !isRequired {
+				continue
+			}
 
-	if allServiceColsLowercased {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "header service columns are already lowercase",
+			if trimmed != normalized {
+				return checks.ValidationResult{
+					OK:  false,
+					Msg: "some service columns in header are not lowercase (expected: term;description;casesensitive;translatable;forbidden;tags)",
+				}
+			}
 		}
 	}
 
 	return checks.ValidationResult{
-		OK:  false,
-		Msg: "some service columns in header are not lowercase (expected: term;description;casesensitive;translatable;forbidden;tags)",
+		OK:  true,
+		Msg: "header service columns are already lowercase",
 	}
 }
 
 // helper: split into lines without dropping anything.
 func splitLinesPreserveAll(s string) []string {
 	return strings.Split(s, "\n")
-}
-
-func firstNonEmptyLineIndex(lines []string) int {
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) != "" {
-			return i
-		}
-	}
-	return -1
 }

@@ -100,7 +100,6 @@ type CheckAdapter struct {
 	failFast bool
 	priority int
 	run      CheckFunc // main entry the runner will call
-	fix      FixFunc   // optional internal fixer (kept private to the interface)
 }
 
 // Option configures a CheckAdapter (priority, fail-fast, attach fix, etc.).

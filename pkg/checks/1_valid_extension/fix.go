@@ -31,14 +31,13 @@ func fixCSVExt(ctx context.Context, a checks.Artifact) (checks.FixResult, error)
 	base = strings.TrimRight(base, ".") // "name." -> "name"
 
 	newPath := base + ".csv"
-	changed := newPath != fp // сравниваем с уже trim'нутым входом
+	changed := newPath != fp
 
 	note := "already has .csv extension"
 	if changed {
 		note = "renamed to .csv"
 	}
 
-	// ВАЖНО: Path пустой когда нет изменений — это "keep original"
 	outPath := ""
 	if changed {
 		outPath = newPath

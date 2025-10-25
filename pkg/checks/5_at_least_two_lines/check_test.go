@@ -40,7 +40,7 @@ func TestValidateAtLeastTwoLines(t *testing.T) {
 		if res.OK {
 			t.Fatalf("expected OK=false for single non-empty line")
 		}
-		if !strings.Contains(res.Msg, "at least header and one data line") {
+		if !strings.Contains(res.Msg, "expected at least two non-empty lines (header + one data row)") {
 			t.Fatalf("unexpected message: %q", res.Msg)
 		}
 	})
@@ -88,8 +88,6 @@ func TestValidateAtLeastTwoLines(t *testing.T) {
 	})
 }
 
-// ---------- end-to-end tests via runEnsureAtLeastTwoLines (no fix available) ----------
-
 func TestRunEnsureAtLeastTwoLines_NoFix_InvalidKeepsArtifact(t *testing.T) {
 	a := checks.Artifact{
 		Data: []byte("just-one-line"),
@@ -109,7 +107,7 @@ func TestRunEnsureAtLeastTwoLines_NoFix_InvalidKeepsArtifact(t *testing.T) {
 	if string(out.Final.Data) != string(a.Data) || out.Final.Path != a.Path {
 		t.Fatalf("artifact must be kept as-is")
 	}
-	if !strings.Contains(out.Result.Message, "at least header and one data line") {
+	if !strings.Contains(out.Result.Message, "expected at least two non-empty lines (header + one data row)") {
 		t.Fatalf("unexpected message: %q", out.Result.Message)
 	}
 }

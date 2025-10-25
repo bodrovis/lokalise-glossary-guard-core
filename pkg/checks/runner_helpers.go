@@ -96,7 +96,20 @@ func RunWithFix(ctx context.Context, a Artifact, opts RunOptions, r RunRecipe) C
 	if !changed && fr.Note == "" {
 		applied = "auto-fix attempted (no changes)"
 	}
-	return OutcomeWithFinal(Warn, r.Name, applied, final)
+	st := Warn
+	if failAs == Error {
+		st = Error
+	}
+	return OutcomeWithFinal(st, r.Name, applied, final)
+}
+
+func NoFix(a Artifact, note string) (FixResult, error) {
+	return FixResult{
+		Data:      a.Data,
+		Path:      "",
+		DidChange: false,
+		Note:      note,
+	}, ErrNoFix
 }
 
 // panic-safe wrappers

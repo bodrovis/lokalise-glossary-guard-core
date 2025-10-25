@@ -1,0 +1,211 @@
+package duplicate_term_values
+
+import (
+	"context"
+	"strconv"
+	"strings"
+
+	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
+)
+
+const checkName = "warn-duplicate-term-values"
+
+func init() {
+	ch, err := checks.NewCheckAdapter(
+		checkName,
+		runWarnDuplicateTermValues,
+		// no FailFast(): duplicates in term are bad but not blocker
+		checks.WithPriority(13),
+	)
+	if err != nil {
+		panic(checkName + ": " + err.Error())
+	}
+	if _, err := checks.Register(ch); err != nil {
+		panic(checkName + " register: " + err.Error())
+	}
+}
+
+// runWarnDuplicateTermValues wires validation only. No auto-fix yet.
+func runWarnDuplicateTermValues(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
+	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
+		Name:             checkName,
+		Validate:         validateWarnDuplicateTermValues,
+		Fix:              fixDuplicateTermValues,
+		PassMsg:          "no duplicate term values",
+		FixedMsg:         "removed duplicate term rows",
+		AppliedMsg:       "auto-fix applied: removed duplicate term rows",
+		StatusAfterFixed: checks.Pass,
+		FailAs:           checks.Warn,
+		StillBadMsg:      "duplicate term values are still present after fix",
+	})
+}
+
+// validateWarnDuplicateTermValues scans the "term" column and warns if the same non-empty value appears in multiple rows.
+// Case-sensitive: "Apple" and "apple" are considered different terms.
+// We report up to 10 offending term groups in the message, each annotated with row numbers (1-based).
+func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+	if err := ctx.Err(); err != nil {
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "validation cancelled",
+			Err: err,
+		}
+	}
+
+	raw := string(a.Data)
+	if raw == "" {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no content to validate for duplicate term values",
+		}
+	}
+
+	lines := strings.Split(raw, "\n")
+	headerIdx := checks.FirstNonEmptyLineIndex(lines)
+	if headerIdx < 0 {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no header line found (nothing to validate for duplicate term values)",
+		}
+	}
+
+	headerLine := lines[headerIdx]
+	if strings.TrimSpace(headerLine) == "" {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "empty header line (nothing to validate for duplicate term values)",
+		}
+	}
+
+	headerCells := splitCells(headerLine)
+
+	// find term column index
+	termCol := -1
+	for i, h := range headerCells {
+		if strings.ToLower(strings.TrimSpace(h)) == "term" {
+			termCol = i
+			break
+		}
+	}
+	if termCol < 0 {
+		// earlier checks should catch missing term column, so we skip loudly failing here
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no 'term' column found (skipping duplicate term check)",
+		}
+	}
+
+	// map termValue -> slice of row numbers (1-based)
+	seen := make(map[string][]int)
+
+	for rowIdx := headerIdx + 1; rowIdx < len(lines); rowIdx++ {
+		rowRaw := lines[rowIdx]
+		if strings.TrimSpace(rowRaw) == "" {
+			continue
+		}
+
+		cells := splitCells(rowRaw)
+
+		val := ""
+		if termCol < len(cells) {
+			val = strings.TrimSpace(cells[termCol])
+		}
+		if val == "" {
+			// empty terms are handled by the previous (priority 12) check,
+			// and don't count as "duplicates" here
+			continue
+		}
+
+		seen[val] = append(seen[val], rowIdx+1) // human line number
+	}
+
+	// build list of duplicates: any term that appears on >=2 rows
+	type dupInfo struct {
+		term string
+		rows []int
+	}
+	var dups []dupInfo
+	for term, rows := range seen {
+		if len(rows) >= 2 {
+			dups = append(dups, dupInfo{
+				term: term,
+				rows: rows,
+			})
+		}
+	}
+
+	if len(dups) == 0 {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no duplicate term values",
+		}
+	}
+
+	// format message, up to first 10 duplicate terms
+	limit := 10
+	if len(dups) < limit {
+		limit = len(dups)
+	}
+
+	var b strings.Builder
+	b.WriteString("duplicate term values found: ")
+
+	for i := 0; i < limit; i++ {
+		d := dups[i]
+
+		// cap number of rows we show for each term? we can just show them all, it's usually small.
+		b.WriteString(`"`)
+		b.WriteString(d.term)
+		b.WriteString(`" (rows `)
+		b.WriteString(joinIntSlice(d.rows, ", "))
+		b.WriteString(`)`)
+
+		if i != limit-1 {
+			b.WriteString("; ")
+		}
+	}
+
+	if len(dups) > limit {
+		// if there are more than we showed, say how many total groups
+		b.WriteString(" ... (total ")
+		b.WriteString(strconv.Itoa(len(dups)))
+		b.WriteString(" duplicate terms)")
+	} else {
+		b.WriteString(" (total ")
+		b.WriteString(strconv.Itoa(len(dups)))
+		b.WriteString(" duplicate terms)")
+	}
+
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: b.String(),
+		// Err stays nil → WARN, not ERROR
+	}
+}
+
+// splitCells splits on ';' and trims spaces around cells.
+func splitCells(s string) []string {
+	parts := strings.Split(s, ";")
+	for i := range parts {
+		parts[i] = strings.TrimSpace(parts[i])
+	}
+	return parts
+}
+
+// joinIntSlice joins ints like "2, 5, 10".
+func joinIntSlice(nums []int, sep string) string {
+	if len(nums) == 0 {
+		return ""
+	}
+	if len(nums) == 1 {
+		return strconv.Itoa(nums[0])
+	}
+	var b strings.Builder
+	b.WriteString(strconv.Itoa(nums[0]))
+	for i := 1; i < len(nums); i++ {
+		b.WriteString(sep)
+		b.WriteString(" ")
+		b.WriteString(strconv.Itoa(nums[i]))
+	}
+	return b.String()
+}

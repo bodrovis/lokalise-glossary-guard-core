@@ -23,7 +23,7 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 	}
 
 	lines := splitLinesPreserveAll(raw)
-	headerIdx := firstNonEmptyLineIndex(lines)
+	headerIdx := checks.FirstNonEmptyLineIndex(lines)
 	if headerIdx < 0 {
 		return checks.FixResult{
 			Data:      a.Data,
@@ -46,7 +46,6 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 	}
 
 	if !changed {
-		// уже всё чисто, фикс по сути не нужен
 		return checks.FixResult{
 			Data:      a.Data,
 			Path:      "",
@@ -55,9 +54,7 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		}, nil
 	}
 
-	newHeader := strings.Join(cells, ";")
-	lines[headerIdx] = newHeader
-
+	lines[headerIdx] = strings.Join(cells, ";")
 	out := strings.Join(lines, "\n")
 
 	return checks.FixResult{
@@ -72,13 +69,4 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 // basically strings.Split but keeps empty trailing last line predictable.
 func splitLinesPreserveAll(s string) []string {
 	return strings.Split(s, "\n")
-}
-
-func firstNonEmptyLineIndex(lines []string) int {
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) != "" {
-			return i
-		}
-	}
-	return -1
 }

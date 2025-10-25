@@ -25,22 +25,18 @@ func init() {
 	}
 }
 
-// runUTF8Check wires the recipe: validate → maybe fix → maybe revalidate.
-// NOTE: FailAs omitted → defaults to FAIL (works well with FailFast).
 func runUTF8Check(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
 		Validate:         validateUTF8,
-		Fix:              fixUTF8, // will implement in fix.go
+		Fix:              fixUTF8,
 		PassMsg:          "file encoding is valid UTF-8",
 		FixedMsg:         "encoding fixed to valid UTF-8",
 		AppliedMsg:       "auto-fix applied",
-		StatusAfterFixed: checks.Pass, // trust the recode → PASS
+		StatusAfterFixed: checks.Pass,
 	})
 }
 
-// validateUTF8 inspects bytes and reports first invalid position (if any).
-// It’s panic-safe via RunWithFix’s safeValidate wrapper.
 func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
@@ -48,17 +44,17 @@ func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResul
 
 	data := a.Data
 	if len(data) == 0 {
-		// policy choice: empty file = cannot determine → FAIL (not ERROR)
-		return checks.ValidationResult{OK: false, Msg: "empty file: cannot determine encoding"}
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "empty file: cannot determine encoding (expected UTF-8)",
+		}
 	}
 
-	// Fast path: entirely valid
 	if utf8.Valid(data) {
-		return checks.ValidationResult{OK: true}
+		return checks.ValidationResult{OK: true, Msg: "valid UTF-8"}
 	}
 
-	// Find the first offending byte for a nicer message.
-	const checkEvery = 1 << 16 // periodically check ctx for large blobs
+	const checkEvery = 1 << 16
 	for i := 0; i < len(data); {
 		if (i & (checkEvery - 1)) == 0 {
 			if err := ctx.Err(); err != nil {
@@ -69,12 +65,11 @@ func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResul
 		if r == utf8.RuneError && size == 1 {
 			return checks.ValidationResult{
 				OK:  false,
-				Msg: fmt.Sprintf("invalid UTF-8 at byte %d of %d", i, len(data)),
+				Msg: fmt.Sprintf("invalid UTF-8 sequence at byte %d of %d", i, len(data)),
 			}
 		}
 		i += size
 	}
 
-	// If we got here, we saw RuneError with size>1 somewhere (rare), or mixed state; still invalid.
-	return checks.ValidationResult{OK: false, Msg: "invalid UTF-8"}
+	return checks.ValidationResult{OK: false, Msg: "invalid UTF-8 encoding"}
 }

@@ -23,7 +23,7 @@ func fixLowercaseHeader(ctx context.Context, a checks.Artifact) (checks.FixResul
 	}
 
 	lines := splitLinesPreserveAll(raw)
-	headerIdx := firstNonEmptyLineIndex(lines)
+	headerIdx := checks.FirstNonEmptyLineIndex(lines)
 	if headerIdx < 0 {
 		return checks.FixResult{
 			Data:      a.Data,
@@ -38,20 +38,15 @@ func fixLowercaseHeader(ctx context.Context, a checks.Artifact) (checks.FixResul
 
 	changed := false
 	for i, c := range cells {
-		originalCell := c
-
-		trimmed := strings.TrimSpace(c)
-		lower := strings.ToLower(trimmed)
-
-		if _, mustLower := requiredLowercaseCols[lower]; mustLower {
-			if originalCell != lower {
+		normalized := strings.ToLower(strings.TrimSpace(c))
+		if _, mustLower := requiredLowercaseCols[normalized]; mustLower {
+			if c != normalized {
 				changed = true
 			}
-			cells[i] = lower
-			continue
+			cells[i] = normalized
+		} else {
+			cells[i] = c
 		}
-
-		cells[i] = originalCell
 	}
 
 	if !changed {
@@ -63,8 +58,7 @@ func fixLowercaseHeader(ctx context.Context, a checks.Artifact) (checks.FixResul
 		}, nil
 	}
 
-	newHeader := strings.Join(cells, ";")
-	lines[headerIdx] = newHeader
+	lines[headerIdx] = strings.Join(cells, ";")
 	out := strings.Join(lines, "\n")
 
 	return checks.FixResult{

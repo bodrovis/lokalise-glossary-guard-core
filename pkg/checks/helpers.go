@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
+	"strings"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -121,7 +122,7 @@ func PropagateAfterFix(in Artifact, fr FixResult) (outData []byte, outPath strin
 	if fr.DidChange {
 		didChange = true
 	}
-	return
+	return outData, outPath, didChange
 }
 
 // OutcomeWithFinal — generic builder when you already have the final state.
@@ -138,4 +139,22 @@ func OutcomeKeep(st Status, name, msg string, a Artifact, note string) CheckOutc
 		Result: CheckResult{Name: name, Status: st, Message: msg},
 		Final:  FixResult{Data: a.Data, Path: a.Path, DidChange: false, Note: note},
 	}
+}
+
+func FirstNonEmptyLineIndex(lines []string) int {
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) != "" {
+			return i
+		}
+	}
+	return -1
+}
+
+func SplitHeaderCells(s string) []string {
+	raw := strings.Split(s, ";")
+	out := make([]string, len(raw))
+	for i := range raw {
+		out[i] = strings.TrimSpace(raw[i])
+	}
+	return out
 }

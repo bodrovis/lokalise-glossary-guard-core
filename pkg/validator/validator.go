@@ -1,4 +1,3 @@
-// file: pkg/validator/validator.go
 package validator
 
 import (
@@ -52,19 +51,20 @@ func Validate(
 			return s, err
 		}
 
-		// 1) run a single check unit
+		// 1) run the check
 		out := runUnit(ctx, u, artifact, opts)
 
-		// 2) aggregate counters + keep outcome
+		// 2) count and record
 		updateCounters(&s, out)
 		s.Outcomes = append(s.Outcomes, out)
 
-		// 3) propagate Final (data/path) into the next artifact
+		// 3) propagate Final -> artifact and summary
 		artifact = propagate(artifact, out, &s)
 
 		// 4) fail-fast policy
 		if shouldStop(u, out) {
 			markEarlyExit(&s, u, out)
+
 			// escalate to error if policy requires
 			if out.Result.Status == checks.Error && opts.HardFailOnErr {
 				return s, fmt.Errorf("fail-fast on ERROR at %q: %s", u.Name(), out.Result.Message)
@@ -73,7 +73,7 @@ func Validate(
 		}
 	}
 
-	// 5) overall error escalation if any ERRORs and policy requires it
+	// 5) post-run escalation if any ERROR and HardFailOnErr is set
 	if opts.HardFailOnErr && s.Error > 0 {
 		msg := firstErrorMessage(s)
 		if msg == "" {
@@ -85,7 +85,7 @@ func Validate(
 	return s, nil
 }
 
-// newSummary initializes a Summary with the original file state.
+// newSummary seeds the summary with the input state.
 func newSummary(path string, data []byte) Summary {
 	return Summary{
 		FilePath:  path,
@@ -104,7 +104,7 @@ func ctxErr(ctx context.Context) error {
 	}
 }
 
-// runUnit executes a single CheckUnit with given artifact/options.
+// runUnit executes one CheckUnit.
 func runUnit(ctx context.Context, u checks.CheckUnit, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return u.Run(ctx, a, opts)
 }
@@ -123,39 +123,34 @@ func updateCounters(s *Summary, out checks.CheckOutcome) {
 	}
 }
 
-// propagate applies a unit's Final to the running artifact and summary.
-// Returns the next artifact to feed into the next unit.
+// propagate takes the Final from a check outcome and updates:
+// - running artifact for next check
+// - summary.FinalData/FinalPath
+// - summary.AppliedFixes
 func propagate(cur checks.Artifact, out checks.CheckOutcome, s *Summary) checks.Artifact {
 	final := out.Final
 
-	// If Final.DidChange is true, we mark that fixes were applied.
-	// Мы всё равно используем Final.* как источник истины для следующего шага.
 	if final.DidChange {
 		s.AppliedFixes = true
 	}
 
-	// Data: if Final.Data is nil, keep current bytes; otherwise use Final.Data.
+	// update data if provided
 	if final.Data != nil {
 		cur.Data = final.Data
-		s.FinalData = final.Data
-	} else {
-		s.FinalData = cur.Data
 	}
+	s.FinalData = cur.Data
 
-	// Path: if Final.Path is empty, keep current path; otherwise use Final.Path.
+	// update path if provided
 	if final.Path != "" {
 		cur.Path = final.Path
-		s.FinalPath = final.Path
-	} else {
-		s.FinalPath = cur.Path
 	}
+	s.FinalPath = cur.Path
 
 	return cur
 }
 
-// shouldStop implements the fail-fast policy for a single unit outcome.
-// Stop on FAIL always; stop on ERROR too (FailFast implies critical),
-// but only return a non-nil error to the caller if HardFailOnErr is set (handled by caller).
+// shouldStop enforces FailFast(): if the unit is marked fail-fast and result is FAIL or ERROR,
+// we stop running further checks.
 func shouldStop(u checks.CheckUnit, out checks.CheckOutcome) bool {
 	if !u.FailFast() {
 		return false
@@ -168,7 +163,7 @@ func shouldStop(u checks.CheckUnit, out checks.CheckOutcome) bool {
 	}
 }
 
-// markEarlyExit annotates summary when a fail-fast condition is met.
+// markEarlyExit annotates summary on fail-fast stop.
 func markEarlyExit(s *Summary, u checks.CheckUnit, out checks.CheckOutcome) {
 	s.EarlyExit = true
 	s.EarlyCheck = u.Name()
@@ -182,7 +177,7 @@ func markEarlyExitCtx(s *Summary, _ error) {
 	s.EarlyStatus = checks.Error
 }
 
-// firstErrorMessage returns the first ERROR message from outcomes (if any).
+// firstErrorMessage returns message from first ERROR outcome.
 func firstErrorMessage(s Summary) string {
 	for _, o := range s.Outcomes {
 		if o.Result.Status == checks.Error && o.Result.Message != "" {

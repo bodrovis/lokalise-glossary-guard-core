@@ -23,7 +23,6 @@ func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
 		runEnsureAllowedColumnsHeader,
-		checks.WithFailFast(),
 		checks.WithPriority(10),
 	)
 	if err != nil {
@@ -39,21 +38,15 @@ func init() {
 // RunWithFix в этом случае вернёт FailAs как статус и не будет менять артефакт.
 func runEnsureAllowedColumnsHeader(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
-		Name:     checkName,
-		Validate: validateAllowedColumnsHeader,
-		Fix:      nil,
-
-		// все не-ок сценарии у нас считаются не критическими:
-		// - неизвестные колонки
-		// - язык не из списка
-		// - язык из списка отсутствует
-		// это всё полезно подсветить, но не надо падать жёстко
-		FailAs: checks.Warn,
-
+		Name:             checkName,
+		Validate:         validateAllowedColumnsHeader,
+		Fix:              fixAllowedColumnsHeader,
+		FailAs:           checks.Warn,
 		PassMsg:          "header columns are allowed",
-		AppliedMsg:       "auto-fix applied", // не будет использоваться, Fix=nil, но поле нужно
-		StillBadMsg:      "header columns have issues",
-		StatusAfterFixed: checks.Pass, // не используется тут, но пусть будет консистентно
+		FixedMsg:         "header columns normalized (unknown columns removed, missing language columns added)",
+		AppliedMsg:       "auto-fix applied to header columns",
+		StillBadMsg:      "header columns still have issues after auto-fix",
+		StatusAfterFixed: checks.Pass,
 	})
 }
 
@@ -77,7 +70,7 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 	}
 
 	lines := strings.Split(raw, "\n")
-	headerIdx := firstNonEmptyLineIndex(lines)
+	headerIdx := checks.FirstNonEmptyLineIndex(lines)
 	if headerIdx < 0 {
 		return checks.ValidationResult{
 			OK:  false,
@@ -86,7 +79,7 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 	}
 
 	header := lines[headerIdx]
-	cols := splitHeaderCells(header)
+	cols := checks.SplitHeaderCells(header)
 
 	// нормализованный в нижний регистр вайтлист языков, если юзер его передал
 	allowedLangsNorm := map[string]struct{}{}
@@ -195,10 +188,10 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 
 	if !hasAllowed && len(detectedLangsNoConfig) > 0 {
 		return checks.ValidationResult{
-			OK: false,
-			Msg: "detected possible language columns: " +
+			OK: true,
+			Msg: "header columns look like languages: " +
 				strings.Join(detectedLangsNoConfig, ", ") +
-				"; no language list provided for validation",
+				" (no declared language list, skipped strict validation)",
 		}
 	}
 
@@ -264,7 +257,7 @@ func looksLikeLangCode(s string) bool {
 		return false
 	}
 	for _, r := range first {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
 			return false
 		}
 	}
@@ -274,9 +267,9 @@ func looksLikeLangCode(s string) bool {
 			return false
 		}
 		for _, r := range seg {
-			if !(r >= 'a' && r <= 'z' ||
-				r >= 'A' && r <= 'Z' ||
-				r >= '0' && r <= '9') {
+			if (r < 'a' || r > 'z') &&
+				(r < 'A' || r > 'Z') &&
+				(r < '0' || r > '9') {
 				return false
 			}
 		}
@@ -293,25 +286,4 @@ func appendIfMissing(sl []string, v string) []string {
 		}
 	}
 	return append(sl, v)
-}
-
-// splitHeaderCells: режем по ';' и тримаем по краям.
-// к этому моменту предыдущие фиксы уже должны были подчистить пробелы в хедере,
-// так что TrimSpace тут не ломает инварианты.
-func splitHeaderCells(header string) []string {
-	rawCells := strings.Split(header, ";")
-	out := make([]string, 0, len(rawCells))
-	for _, c := range rawCells {
-		out = append(out, strings.TrimSpace(c))
-	}
-	return out
-}
-
-func firstNonEmptyLineIndex(lines []string) int {
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) != "" {
-			return i
-		}
-	}
-	return -1
 }

@@ -14,7 +14,7 @@ func init() {
 		checkName,
 		runNoSpacesInHeader,
 		checks.WithFailFast(),
-		checks.WithPriority(8),
+		checks.WithPriority(7),
 	)
 	if err != nil {
 		panic(checkName + ": " + err.Error())
@@ -38,8 +38,6 @@ func runNoSpacesInHeader(ctx context.Context, a checks.Artifact, opts checks.Run
 	})
 }
 
-// validateNoSpacesInHeader проверяет только первую строку файла (header).
-// считаем что разделитель уже гарантирован как ';', файл не пустой и т.д.
 func validateNoSpacesInHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{
@@ -67,15 +65,24 @@ func validateNoSpacesInHeader(ctx context.Context, a checks.Artifact) checks.Val
 
 	header := lines[0]
 
-	// разбираем хедер по ; — считаем что ; верный и он уже проверен до этого чекера
-	cells := strings.Split(header, ";")
+	start := 0
+	for i := 0; i <= len(header); i++ {
+		if i == len(header) || header[i] == ';' {
+			c := header[start:i]
+			start = i + 1
 
-	for _, c := range cells {
-		if c != strings.TrimSpace(c) {
-			// то есть есть лид/трейл пробелы
-			return checks.ValidationResult{
-				OK:  false,
-				Msg: "header has leading/trailing spaces in column names",
+			if err := ctx.Err(); err != nil {
+				return checks.ValidationResult{
+					OK:  false,
+					Msg: "validation cancelled",
+					Err: err,
+				}
+			}
+			if c != strings.TrimSpace(c) {
+				return checks.ValidationResult{
+					OK:  false,
+					Msg: "header has leading/trailing spaces in column names",
+				}
 			}
 		}
 	}

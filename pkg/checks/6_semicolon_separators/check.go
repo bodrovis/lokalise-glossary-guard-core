@@ -3,7 +3,6 @@ package semicolon_separator
 import (
 	"context"
 	"encoding/csv"
-	"io"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -34,216 +33,97 @@ func runEnsureSemicolonSeparators(ctx context.Context, a checks.Artifact, opts c
 		PassMsg:          "file uses semicolons as separators",
 		FixedMsg:         "converted separators to semicolons",
 		AppliedMsg:       "auto-fix applied: converted separators to semicolons",
+		StillBadMsg:      "auto-fix attempted but file is still not cleanly semicolon-separated",
 		StatusAfterFixed: checks.Pass,
 	})
 }
 
-// validateSemicolonSeparated confirms the file is consistently delimited by ';'.
-// If it's consistently delimited by other common delimiters, it fails (so Fix can kick in).
-// If nothing looks consistent, it fails generically (no fix).
 func validateSemicolonSeparated(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
-		}
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
 	data := strings.TrimSpace(string(a.Data))
 	if data == "" {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot detect separators: no usable content",
-		}
+		return checks.ValidationResult{OK: false, Msg: "cannot detect separators: no usable content"}
 	}
 
-	const maxLines = 100
-
-	// 1. Happy path: already looks like proper semicolon-separated CSV.
-	if ok, _ := looksLikeDelimited(data, ';', maxLines); ok {
-		return checks.ValidationResult{
-			OK: true,
-		}
+	if err := ctx.Err(); err != nil {
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+	semiOK, _ := attemptRectParse(data, ';')
+	if semiOK {
+		return checks.ValidationResult{OK: true}
 	}
 
-	// 2. Check if it's consistently comma-separated or tab-separated.
-	commaOK, _ := looksLikeDelimited(data, ',', maxLines)
-	tabOK, _ := looksLikeDelimited(data, '\t', maxLines)
-
-	// 3. Only if it's neither proper commas nor proper tabs,
-	//    try to classify it as "mixed delimiter soup".
-	//
-	//    Why: A valid comma-separated CSV may still contain semicolons
-	//    inside quoted fields ("foo;bar"), which is fine and fixable.
-	//    We don't want to block auto-fix in that case.
-	if !commaOK && !tabOK && hasMixedDelimiters(data) {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "inconsistent/mixed delimiters detected (e.g. both ',' and ';'); cannot safely auto-convert; expected semicolons (;)",
-		}
+	if err := ctx.Err(); err != nil {
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
+	commaOK, _ := attemptRectParse(data, ',')
+	tabOK, _ := attemptRectParse(data, '\t')
 
-	// 4. Stable comma-separated CSV (fixable).
-	if commaOK {
+	switch {
+	case commaOK:
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "file appears to use commas as separators; expected semicolons (;)",
 		}
-	}
-
-	// 5. Stable tab-separated TSV (also fixable).
-	if tabOK {
+	case tabOK:
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "file appears to use tabs as separators; expected semicolons (;)",
 		}
-	}
-
-	// 6. Totally unclear / structurally inconsistent.
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "could not confirm a consistent semicolon-separated format; expected semicolons (;)",
+	default:
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "could not confirm consistent semicolon-separated format; cannot confidently detect an alternative delimiter",
+		}
 	}
 }
 
-// looksLikeDelimited tries to parse up to N records using a given delimiter and
-// decides if the file is "consistently delimited":
-//   - parse succeeds for at least 2 non-empty records,
-//   - each record has >=2 fields,
-//   - field count is stable (allowing at most 1 mismatch to be tolerant to odd headers).
-func looksLikeDelimited(data string, delim rune, max int) (bool, int) {
+// attemptRectParse tries to parse data with the given delimiter using encoding/csv
+// and then validates that the result is a proper "table":
+// - at least one non-empty record
+// - every record has the same number of fields
+// - that number of fields > 1 (so we don't 'convert' single-column junk)
+//
+// returns (isRectangular, records)
+func attemptRectParse(data string, delim rune) (bool, [][]string) {
 	r := csv.NewReader(strings.NewReader(data))
 	r.Comma = delim
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
+	r.FieldsPerRecord = -1 // allow ragged for now; we'll check manually
+	r.LazyQuotes = true    // be forgiving
 
-	read := 0
-	stableCols := -1
-	mismatch := 0
+	recs, err := r.ReadAll()
+	if err != nil {
+		return false, nil
+	}
+	if len(recs) == 0 {
+		return false, nil
+	}
 
-	for {
-		if read >= max {
+	// find first non-empty row length
+	var width int
+	for _, row := range recs {
+		if len(row) > 0 && len(row) != 1 || strings.TrimSpace(row[0]) != "" {
+			width = len(row)
 			break
 		}
-		rec, err := r.Read()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return false, 0
-		}
+	}
+	if width <= 1 {
+		// table with only 0 or 1 column — not worth "converting"
+		return false, nil
+	}
 
-		nonEmpty := 0
-		for _, f := range rec {
-			if strings.TrimSpace(f) != "" {
-				nonEmpty++
-			}
-		}
-		if nonEmpty == 0 {
+	// verify all rows have same length
+	for _, row := range recs {
+		if len(row) == 0 {
 			continue
 		}
-
-		read++
-		fields := len(rec)
-		if fields < 2 {
-			return false, 0
-		}
-
-		if stableCols < 0 {
-			stableCols = fields
-		} else if fields != stableCols {
-			mismatch++
-			if mismatch > 1 {
-				return false, 0
-			}
+		if len(row) != width {
+			return false, nil
 		}
 	}
 
-	if read < 2 || stableCols < 2 {
-		return false, 0
-	}
-	return true, stableCols
-}
-
-func hasMixedDelimiters(data string) bool {
-	lines := splitLinesLimited(data, 20)
-
-	type sig struct {
-		semi  int
-		comma int
-		tab   int
-	}
-
-	lineSigs := make([]sig, 0, len(lines))
-
-	for _, ln := range lines {
-		trimmed := strings.TrimSpace(ln)
-		if trimmed == "" {
-			continue
-		}
-
-		s := sig{
-			semi:  strings.Count(trimmed, ";"),
-			comma: strings.Count(trimmed, ","),
-			tab:   strings.Count(trimmed, "\t"),
-		}
-
-		kindCount := 0
-		if s.semi > 0 {
-			kindCount++
-		}
-		if s.comma > 0 {
-			kindCount++
-		}
-		if s.tab > 0 {
-			kindCount++
-		}
-		if kindCount > 1 {
-			return true
-		}
-
-		lineSigs = append(lineSigs, s)
-	}
-
-	var prevMain rune = 0
-	for _, s := range lineSigs {
-		curMain := rune(0)
-
-		if s.semi >= 2 && s.comma == 0 && s.tab == 0 {
-			curMain = ';'
-		} else if s.comma >= 2 && s.semi == 0 && s.tab == 0 {
-			curMain = ','
-		} else if s.tab >= 2 && s.semi == 0 && s.comma == 0 {
-			curMain = '\t'
-		}
-
-		if curMain == 0 {
-			continue
-		}
-		if prevMain == 0 {
-			prevMain = curMain
-			continue
-		}
-		if curMain != prevMain {
-			return true
-		}
-	}
-
-	return false
-}
-
-func splitLinesLimited(s string, limit int) []string {
-	out := make([]string, 0, limit)
-	start := 0
-	for start < len(s) && len(out) < limit {
-		i := strings.IndexByte(s[start:], '\n')
-		if i < 0 {
-			out = append(out, s[start:])
-			break
-		}
-		out = append(out, s[start:start+i])
-		start += i + 1
-	}
-	return out
+	return true, recs
 }

@@ -25,7 +25,6 @@ func init() {
 	}
 }
 
-// runEnsureCSV: validate → maybe fix → maybe revalidate
 func runEnsureCSV(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -45,16 +44,26 @@ func validateCSVExt(ctx context.Context, a checks.Artifact) checks.ValidationRes
 
 	path := strings.TrimSpace(a.Path)
 	if path == "" {
-		return checks.ValidationResult{OK: false, Msg: "empty path: cannot validate extension"}
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "empty path: cannot validate extension",
+		}
 	}
 
-	ext := filepath.Ext(path) // includes the leading dot, or "" if none
+	ext := filepath.Ext(path)
 	if strings.EqualFold(ext, ".csv") {
-		return checks.ValidationResult{OK: true}
+		return checks.ValidationResult{OK: true, Msg: "extension is .csv"}
 	}
 
 	if ext == "" {
-		return checks.ValidationResult{OK: false, Msg: "invalid file extension: (none) (expected .csv)"}
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "invalid file extension: none (expected .csv)",
+		}
 	}
-	return checks.ValidationResult{OK: false, Msg: "invalid file extension: " + ext + " (expected .csv)"}
+
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "invalid file extension: " + ext + " (expected .csv)",
+	}
 }

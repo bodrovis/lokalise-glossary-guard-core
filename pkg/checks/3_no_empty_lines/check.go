@@ -35,8 +35,8 @@ func runNoEmptyLines(ctx context.Context, a checks.Artifact, opts checks.RunOpti
 		PassMsg:          "no empty lines detected",
 		FixedMsg:         "empty lines removed",
 		AppliedMsg:       "auto-fix applied (blank lines removed)",
-		StatusAfterFixed: checks.Pass, // we trust the fix → PASS
-		FailAs:           checks.Warn, // invalid but not catastrophic → WARN
+		StatusAfterFixed: checks.Pass,
+		FailAs:           checks.Warn,
 	})
 }
 

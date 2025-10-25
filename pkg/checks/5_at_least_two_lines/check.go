@@ -1,6 +1,7 @@
 package at_least_two_lines
 
 import (
+	"bufio"
 	"context"
 	"strings"
 
@@ -34,12 +35,10 @@ func runEnsureAtLeastTwoLines(ctx context.Context, a checks.Artifact, opts check
 		FailAs:     checks.Fail,
 		FixedMsg:   "",
 		AppliedMsg: "",
-		Fix:        nil, // no fix available
+		Fix:        nil,
 	})
 }
 
-// validateAtLeastTwoLines checks if the file contains at least two non-empty lines.
-// validateAtLeastTwoLines checks if the file contains at least two non-empty lines.
 func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
@@ -53,33 +52,31 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 		}
 	}
 
+	sc := bufio.NewScanner(strings.NewReader(data))
+	const maxLine = 16 << 20
+	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
+
 	lines := 0
-	start := 0
-	for start < len(data) {
-		// find next newline
-		idx := strings.IndexByte(data[start:], '\n')
-		var line string
-		if idx == -1 {
-			line = data[start:]
-			start = len(data)
-		} else {
-			line = data[start : start+idx]
-			start += idx + 1
+	for sc.Scan() {
+		if err := ctx.Err(); err != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 		}
-		if strings.TrimSpace(line) != "" {
-			lines++
-			if lines >= 2 {
-				break
-			}
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		lines++
+		if lines >= 2 {
+			return checks.ValidationResult{OK: true}
 		}
 	}
 
-	if lines < 2 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "file must contain at least header and one data line",
-		}
+	if err := sc.Err(); err != nil {
+		return checks.ValidationResult{OK: false, Msg: "failed to read file", Err: err}
 	}
 
-	return checks.ValidationResult{OK: true}
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "expected at least two non-empty lines (header + one data row)",
+	}
 }

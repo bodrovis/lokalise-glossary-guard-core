@@ -14,13 +14,13 @@ func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.Fi
 
 	raw := string(a.Data)
 	if raw == "" {
-		return noFix(a, "no usable content to fix")
+		return checks.NoFix(a, "no usable content to fix")
 	}
 
 	lines := strings.Split(raw, "\n")
-	headerIdx := firstNonEmptyLineIndex(lines)
+	headerIdx := checks.FirstNonEmptyLineIndex(lines)
 	if headerIdx < 0 {
-		return noFix(a, "no header line found")
+		return checks.NoFix(a, "no header line found")
 	}
 
 	// исходный header и его колонки
@@ -136,13 +136,4 @@ func findHeaderPositions(cols []string) (int, int) {
 		}
 	}
 	return posTerm, posDesc
-}
-
-func noFix(a checks.Artifact, note string) (checks.FixResult, error) {
-	return checks.FixResult{
-		Data:      a.Data,
-		Path:      "",
-		DidChange: false,
-		Note:      note,
-	}, checks.ErrNoFix
 }

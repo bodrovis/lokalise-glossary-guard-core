@@ -11,7 +11,6 @@ import (
 	"golang.org/x/net/html/charset"
 )
 
-// We never keep a UTF-8 BOM in the output.
 var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
 
 type bomKind int
@@ -25,46 +24,116 @@ const (
 	bomUTF32BE
 )
 
-// sniffBOM detects a leading BOM and classifies the encoding family.
-func sniffBOM(b []byte) bomKind {
-	if len(b) >= 3 && bytes.Equal(b[:3], utf8BOM) {
-		return bomUTF8
+// fixUTF8 re-encodes input to UTF-8 without BOM.
+func fixUTF8(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
+	if err := ctx.Err(); err != nil {
+		return checks.FixResult{}, err
 	}
-	if len(b) >= 2 {
-		if b[0] == 0xFF && b[1] == 0xFE {
-			if len(b) >= 4 && b[2] == 0x00 && b[3] == 0x00 {
-				return bomUTF32LE
-			}
-			return bomUTF16LE
-		}
-		if b[0] == 0xFE && b[1] == 0xFF {
-			return bomUTF16BE
-		}
+	data := a.Data
+	if len(data) == 0 {
+		return checks.FixResult{Data: data, Note: "empty file"}, nil
 	}
-	if len(b) >= 4 {
-		if b[0] == 0x00 && b[1] == 0x00 && b[2] == 0xFE && b[3] == 0xFF {
-			return bomUTF32BE
+
+	switch sniffBOM(data) {
+	case bomUTF8:
+		trimmed := bytes.TrimPrefix(data, utf8BOM)
+		return checks.FixResult{Data: trimmed, DidChange: !bytes.Equal(trimmed, data), Note: "removed UTF-8 BOM"}, nil
+
+	case bomUTF16LE:
+		decoded, err := decodeUTF16(ctx, data[2:], false, true)
+		if err != nil {
+			return checks.FixResult{}, fmt.Errorf("decode UTF-16LE: %w", err)
 		}
+		return checks.FixResult{Data: decoded, DidChange: true, Note: "re-encoded from UTF-16LE"}, nil
+
+	case bomUTF16BE:
+		decoded, err := decodeUTF16(ctx, data[2:], true, true)
+		if err != nil {
+			return checks.FixResult{}, fmt.Errorf("decode UTF-16BE: %w", err)
+		}
+		return checks.FixResult{Data: decoded, DidChange: true, Note: "re-encoded from UTF-16BE"}, nil
+
+	case bomUTF32LE:
+		decoded, err := decodeUTF32(ctx, data[4:], false, true)
+		if err != nil {
+			return checks.FixResult{}, fmt.Errorf("decode UTF-32LE: %w", err)
+		}
+		return checks.FixResult{Data: decoded, DidChange: true, Note: "re-encoded from UTF-32LE"}, nil
+
+	case bomUTF32BE:
+		decoded, err := decodeUTF32(ctx, data[4:], true, true)
+		if err != nil {
+			return checks.FixResult{}, fmt.Errorf("decode UTF-32BE: %w", err)
+		}
+		return checks.FixResult{Data: decoded, DidChange: true, Note: "re-encoded from UTF-32BE"}, nil
 	}
-	return bomNone
+
+	if yes, be := looksLikeUTF16NoBOM(data); yes {
+		decoded, err := decodeUTF16(ctx, data, be, false)
+		if err != nil {
+			return checks.FixResult{}, fmt.Errorf("decode UTF-16 heuristic: %w", err)
+		}
+		dir := map[bool]string{true: "BE", false: "LE"}[be]
+		return checks.FixResult{Data: decoded, DidChange: true, Note: fmt.Sprintf("re-encoded from UTF-16%s (no BOM)", dir)}, nil
+	}
+
+	if utf8.Valid(data) {
+		trimmed := bytes.TrimPrefix(data, utf8BOM)
+		if !bytes.Equal(trimmed, data) {
+			return checks.FixResult{Data: trimmed, DidChange: true, Note: "removed UTF-8 BOM"}, nil
+		}
+		return checks.FixResult{Data: data, Note: "already valid UTF-8"}, nil
+	}
+
+	enc, name, _ := charset.DetermineEncoding(data, "")
+	decoded, err := enc.NewDecoder().Bytes(data)
+	if err != nil {
+		return checks.FixResult{}, fmt.Errorf("decode using %s: %w", name, err)
+	}
+	decoded = bytes.TrimPrefix(decoded, utf8BOM)
+	if !utf8.Valid(decoded) {
+		return checks.FixResult{}, fmt.Errorf("failed to produce valid UTF-8 (source=%s)", name)
+	}
+
+	if name == "utf-8" {
+		name = "detected UTF-8"
+	}
+	note := fmt.Sprintf("re-encoded from %s to UTF-8 (no BOM)", name)
+	if bytes.Equal(decoded, data) {
+		note = "data unchanged; valid UTF-8"
+	}
+	return checks.FixResult{Data: decoded, DidChange: !bytes.Equal(decoded, data), Note: note}, nil
 }
 
-// looksLikeUTF16NoBOM heuristically detects UTF-16 without BOM by counting zero bytes
-// on even vs odd indices in the first up-to-4KiB of input.
-// Returns (yes, bigEndian).
-func looksLikeUTF16NoBOM(b []byte) (yes bool, be bool) {
-	const maxProbe = 4096
-	limit := len(b)
-	if limit > maxProbe {
-		limit = maxProbe
+// sniffBOM detects a leading BOM.
+func sniffBOM(b []byte) bomKind {
+	switch {
+	case len(b) >= 3 && bytes.Equal(b[:3], utf8BOM):
+		return bomUTF8
+	case len(b) >= 4 && b[0] == 0x00 && b[1] == 0x00 && b[2] == 0xFE && b[3] == 0xFF:
+		return bomUTF32BE
+	case len(b) >= 4 && b[0] == 0xFF && b[1] == 0xFE && b[2] == 0x00 && b[3] == 0x00:
+		return bomUTF32LE
+	case len(b) >= 2 && b[0] == 0xFE && b[1] == 0xFF:
+		return bomUTF16BE
+	case len(b) >= 2 && b[0] == 0xFF && b[1] == 0xFE:
+		return bomUTF16LE
+	default:
+		return bomNone
 	}
+}
+
+func looksLikeUTF16NoBOM(b []byte) (yes, be bool) {
+	const maxProbe = 4096
+	limit := min(maxProbe, len(b))
+
 	if limit < 4 {
 		return false, false
 	}
 
 	var evenZeros, oddZeros int
-	for i := 0; i < limit; i++ {
-		if b[i] == 0x00 {
+	for i, v := range b[:limit] {
+		if v == 0x00 {
 			if i%2 == 0 {
 				evenZeros++
 			} else {
@@ -73,31 +142,25 @@ func looksLikeUTF16NoBOM(b []byte) (yes bool, be bool) {
 		}
 	}
 	total := evenZeros + oddZeros
-
-	// Heuristic: if >20% of probed bytes are zeros and we have a strong skew,
-	// treat it as UTF-16; zeros on even indices -> BE (00 xx), else LE (xx 00).
 	if total*5 >= limit {
 		if evenZeros > oddZeros*2 {
-			return true, true // big-endian
+			return true, true
 		}
 		if oddZeros > evenZeros*2 {
-			return true, false // little-endian
+			return true, false
 		}
 	}
 	return false, false
 }
 
-// decodeUTF16 converts UTF-16 bytes to UTF-8. If skipBOM is true, an initial
-// U+FEFF code unit is removed. The function periodically checks ctx for cancellation.
-func decodeUTF16(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byte, error) {
-	// Make length even by padding a zero byte (safe, avoids OOB).
+func decodeUTF16(ctx context.Context, data []byte, be, skipBOM bool) ([]byte, error) {
 	if len(data)%2 != 0 {
-		data = append(data, 0x00)
+		data = append(data, 0)
 	}
 
 	u16 := make([]uint16, 0, len(data)/2)
 	for i := 0; i+1 < len(data); i += 2 {
-		if (i & ((1 << 20) - 1)) == 0 { // check ctx roughly every ~1MB of pairs
+		if (i & ((1 << 20) - 1)) == 0 {
 			if err := ctx.Err(); err != nil {
 				return nil, err
 			}
@@ -111,15 +174,12 @@ func decodeUTF16(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byt
 		u16 = append(u16, v)
 	}
 
-	// Strip BOM code unit if requested (after endian correction, BOM is 0xFEFF).
 	if skipBOM && len(u16) > 0 && u16[0] == 0xFEFF {
 		u16 = u16[1:]
 	}
 
 	runes := utf16.Decode(u16)
-
 	var out bytes.Buffer
-	// Rough growth hint: each rune at least 1 byte, often 1–3 bytes.
 	out.Grow(len(runes))
 	for i, r := range runes {
 		if (i & ((1 << 20) - 1)) == 0 {
@@ -134,16 +194,12 @@ func decodeUTF16(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byt
 	return out.Bytes(), nil
 }
 
-// decodeUTF32 converts UTF-32 bytes to UTF-8. If skipBOM is true, an initial
-// U+0000FEFF code point is removed. The function periodically checks ctx.
-func decodeUTF32(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byte, error) {
-	// Pad up to multiple of 4 to avoid partial reads.
+func decodeUTF32(ctx context.Context, data []byte, be, skipBOM bool) ([]byte, error) {
 	if rem := len(data) % 4; rem != 0 {
 		data = append(data, make([]byte, 4-rem)...)
 	}
 
 	rd := data
-	// Drop BOM code point at the start if requested.
 	if skipBOM && len(rd) >= 4 {
 		var v uint32
 		if be {
@@ -157,9 +213,7 @@ func decodeUTF32(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byt
 	}
 
 	var out bytes.Buffer
-	// Rough growth hint.
 	out.Grow(len(rd) / 3)
-
 	for i := 0; i+3 < len(rd); i += 4 {
 		if (i & ((1 << 20) - 1)) == 0 {
 			if err := ctx.Err(); err != nil {
@@ -174,11 +228,9 @@ func decodeUTF32(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byt
 		}
 
 		r := rune(v)
-		// Skip BOM anywhere in the stream.
 		if r == 0x0000FEFF {
 			continue
 		}
-		// Replace out-of-range code points with RuneError.
 		if !utf8.ValidRune(r) {
 			r = utf8.RuneError
 		}
@@ -188,167 +240,4 @@ func decodeUTF32(ctx context.Context, data []byte, be bool, skipBOM bool) ([]byt
 		out.Write(tmp[:n])
 	}
 	return out.Bytes(), nil
-}
-
-// fixUTF8 re-encodes input to UTF-8 without BOM, handling:
-//   - UTF-8 with BOM (removes BOM)
-//   - UTF-16/UTF-32 (LE/BE) with BOM
-//   - UTF-16 without BOM via heuristic (even/odd zero-byte skew)
-//   - fallback encodings via WHATWG detector (latin1/cp1252/etc.)
-//
-// Returns FixResult with Path="", as path is not changed by encoding fixes.
-func fixUTF8(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
-	// Fast cancellation.
-	if err := ctx.Err(); err != nil {
-		return checks.FixResult{}, err
-	}
-
-	data := a.Data
-	if len(data) == 0 {
-		return checks.FixResult{
-			Data:      data,
-			Path:      "",
-			DidChange: false,
-			Note:      "empty file",
-		}, nil
-	}
-
-	// 1) BOM-driven paths first.
-	switch sniffBOM(data) {
-	case bomUTF8:
-		// Strip UTF-8 BOM; data otherwise treated as valid UTF-8.
-		trimmed := bytes.TrimPrefix(data, utf8BOM)
-		return checks.FixResult{
-			Data:      trimmed,
-			Path:      "",
-			DidChange: !bytes.Equal(trimmed, data),
-			Note:      "removed UTF-8 BOM",
-		}, nil
-
-	case bomUTF16LE:
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		decoded, err := decodeUTF16(ctx, data[2:], false, false) // BOM already stripped
-		if err != nil {
-			return checks.FixResult{}, fmt.Errorf("decode UTF-16LE: %w", err)
-		}
-		return checks.FixResult{
-			Data:      decoded,
-			Path:      "",
-			DidChange: true,
-			Note:      "re-encoded from UTF-16LE to UTF-8 (no BOM)",
-		}, nil
-
-	case bomUTF16BE:
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		decoded, err := decodeUTF16(ctx, data[2:], true, false)
-		if err != nil {
-			return checks.FixResult{}, fmt.Errorf("decode UTF-16BE: %w", err)
-		}
-		return checks.FixResult{
-			Data:      decoded,
-			Path:      "",
-			DidChange: true,
-			Note:      "re-encoded from UTF-16BE to UTF-8 (no BOM)",
-		}, nil
-
-	case bomUTF32LE:
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		decoded, err := decodeUTF32(ctx, data[4:], false, false)
-		if err != nil {
-			return checks.FixResult{}, fmt.Errorf("decode UTF-32LE: %w", err)
-		}
-		return checks.FixResult{
-			Data:      decoded,
-			Path:      "",
-			DidChange: true,
-			Note:      "re-encoded from UTF-32LE to UTF-8 (no BOM)",
-		}, nil
-
-	case bomUTF32BE:
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		decoded, err := decodeUTF32(ctx, data[4:], true, false)
-		if err != nil {
-			return checks.FixResult{}, fmt.Errorf("decode UTF-32BE: %w", err)
-		}
-		return checks.FixResult{
-			Data:      decoded,
-			Path:      "",
-			DidChange: true,
-			Note:      "re-encoded from UTF-32BE to UTF-8 (no BOM)",
-		}, nil
-	}
-
-	// 2) No BOM: try UTF-16 heuristic BEFORE treating as UTF-8.
-	if yes, be := looksLikeUTF16NoBOM(data); yes {
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		decoded, err := decodeUTF16(ctx, data, be, false)
-		if err != nil {
-			dir := map[bool]string{true: "BE", false: "LE"}[be]
-			return checks.FixResult{}, fmt.Errorf("decode UTF-16 (heuristic %s): %w", dir, err)
-		}
-		return checks.FixResult{
-			Data:      decoded,
-			Path:      "",
-			DidChange: true,
-			Note:      fmt.Sprintf("re-encoded from UTF-16%s (no BOM) to UTF-8", map[bool]string{true: "BE", false: "LE"}[be]),
-		}, nil
-	}
-
-	// 3) Already valid UTF-8? Ensure BOM is stripped (idempotent).
-	if utf8.Valid(data) {
-		trimmed := bytes.TrimPrefix(data, utf8BOM)
-		if !bytes.Equal(trimmed, data) {
-			return checks.FixResult{
-				Data:      trimmed,
-				Path:      "",
-				DidChange: true,
-				Note:      "removed UTF-8 BOM",
-			}, nil
-		}
-		return checks.FixResult{
-			Data:      data,
-			Path:      "",
-			DidChange: false,
-			Note:      "already valid UTF-8",
-		}, nil
-	}
-
-	// 4) Fallback: WHATWG sniffing (latin1/cp1252/etc.). The returned decoder
-	// MUST produce valid UTF-8; if it doesn't, we fail with an error.
-	if err := ctx.Err(); err != nil {
-		return checks.FixResult{}, err
-	}
-	enc, name, _ := charset.DetermineEncoding(data, "")
-	decoded, err := enc.NewDecoder().Bytes(data)
-	if err != nil {
-		return checks.FixResult{}, fmt.Errorf("decode using %s: %w", name, err)
-	}
-	decoded = bytes.TrimPrefix(decoded, utf8BOM)
-
-	if !utf8.Valid(decoded) {
-		return checks.FixResult{}, fmt.Errorf("failed to produce valid UTF-8 (source=%s)", name)
-	}
-
-	changed := !bytes.Equal(decoded, data)
-	note := "data unchanged; valid UTF-8"
-	if changed {
-		note = fmt.Sprintf("re-encoded from %s to UTF-8 (no BOM)", name)
-	}
-
-	return checks.FixResult{
-		Data:      decoded,
-		Path:      "",
-		DidChange: changed,
-		Note:      note,
-	}, nil
 }

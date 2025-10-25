@@ -24,8 +24,6 @@ func init() {
 	}
 }
 
-// runEnsureTermDescriptionHeader wires only validation for now.
-// Fix will be added later.
 func runEnsureTermDescriptionHeader(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -57,7 +55,7 @@ func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) check
 	}
 
 	lines := strings.Split(raw, "\n")
-	headerIdx := firstNonEmptyLineIndex(lines)
+	headerIdx := checks.FirstNonEmptyLineIndex(lines)
 	if headerIdx < 0 {
 		return checks.ValidationResult{
 			OK:  false,
@@ -122,11 +120,3 @@ func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) check
 }
 
 // same helper as before
-func firstNonEmptyLineIndex(lines []string) int {
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) != "" {
-			return i
-		}
-	}
-	return -1
-}

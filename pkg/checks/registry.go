@@ -13,11 +13,6 @@ var (
 	byName = map[string]CheckUnit{}
 )
 
-// normalizeName trims and lowercases a check name.
-func normalizeName(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
-}
-
 // Lookup returns a registered check by its (case-insensitive) name.
 func Lookup(name string) (CheckUnit, bool) {
 	name = normalizeName(name)
@@ -47,21 +42,6 @@ func Register(c CheckUnit) (bool, error) {
 	return existed, nil
 }
 
-// Unregister removes a check by (case-insensitive) name. Returns true if it existed.
-func Unregister(name string) bool {
-	name = normalizeName(name)
-	if name == "" {
-		return false
-	}
-	mu.Lock()
-	_, existed := byName[name]
-	if existed {
-		delete(byName, name)
-	}
-	mu.Unlock()
-	return existed
-}
-
 // List returns a snapshot of all registered checks (unsorted).
 func List() []CheckUnit {
 	mu.RLock()
@@ -71,18 +51,6 @@ func List() []CheckUnit {
 	}
 	mu.RUnlock()
 	return out
-}
-
-// Names returns all registered (normalized) check names, sorted ascending.
-func Names() []string {
-	mu.RLock()
-	keys := make([]string, 0, len(byName))
-	for k := range byName {
-		keys = append(keys, k)
-	}
-	mu.RUnlock()
-	sort.Strings(keys)
-	return keys
 }
 
 // ListSorted returns all registered checks sorted by Priority asc, then Name asc.
@@ -117,4 +85,9 @@ func Reset() {
 	mu.Lock()
 	byName = map[string]CheckUnit{}
 	mu.Unlock()
+}
+
+// normalizeName trims and lowercases a check name.
+func normalizeName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
 }

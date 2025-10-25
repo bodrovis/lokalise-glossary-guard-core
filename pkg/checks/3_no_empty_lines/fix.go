@@ -25,7 +25,7 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 	sep := detectLineEnding(in)
 
 	sc := bufio.NewScanner(bytes.NewReader(in))
-	// allow very long CSV lines
+
 	const maxLine = 16 << 20
 	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
 

@@ -34,12 +34,12 @@ func Test_validateAllowedColumnsHeader(t *testing.T) {
 			wantInMsg:   []string{"header columns are allowed"},
 		},
 		{
-			name:        "lang-looking columns but no langs[] provided => OK false (will become WARN in runner)",
+			name:        "lang-looking columns but no langs[] provided => OK false",
 			headerLines: []string{"term;description;en;en_description;pt-BR;pt-BR_description;wtf"},
 			langs:       nil,
-			wantOK:      false,
+			wantOK:      true,
 			wantInMsg: []string{
-				"detected possible language columns",
+				"header columns look like languages",
 				"en",
 				"pt-BR",
 				"wtf",
