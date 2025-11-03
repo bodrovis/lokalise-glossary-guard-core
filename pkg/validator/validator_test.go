@@ -1,362 +1,232 @@
-package validator
+// file: pkg/validator/validator_test.go
+package validator_test
 
 import (
+	"context"
 	"errors"
-	"reflect"
-	"slices"
-	"sort"
 	"testing"
+	"time"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
+	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/validator"
 )
 
-/*** test doubles ***/
-
-type mockCheck struct {
-	name     string
-	priority int
-	failFast bool
-	result   checks.Result
-
-	// optional behavior controls
-	panicOnRun bool
-	expectLang string // if non-empty, will FAIL unless expectLang is present in langs
+// helper: build a simple check with given name/priority/failfast and a run func
+func mkCheck(t *testing.T, name string, prio int, failfast bool, run func(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome) checks.CheckUnit {
+	t.Helper()
+	opts := []checks.Option{checks.WithPriority(prio)}
+	if failfast {
+		opts = append(opts, checks.WithFailFast())
+	}
+	ch, err := checks.NewCheckAdapter(name, run, opts...)
+	if err != nil {
+		t.Fatalf("mkCheck(%s): %v", name, err)
+	}
+	return ch
 }
 
-func (m mockCheck) Name() string   { return m.name }
-func (m mockCheck) Priority() int  { return m.priority }
-func (m mockCheck) FailFast() bool { return m.failFast }
-func (m mockCheck) Run(_data []byte, _path string, langs []string) checks.Result {
-	if m.panicOnRun {
-		panic("kaboom")
+func TestValidate_OrderAndCounters(t *testing.T) {
+	checks.Reset()
+	t.Cleanup(checks.Reset)
+
+	// c2 (prio 1): PASS
+	_, _ = checks.Register(mkCheck(t, "c2", 1, false,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Pass, "c2", "ok-1", a, "")
+		},
+	))
+
+	// c1 (prio 2): WARN
+	_, _ = checks.Register(mkCheck(t, "c1", 2, false,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Warn, "c1", "warn", a, "")
+		},
+	))
+
+	// c3 (prio 3): PASS
+	_, _ = checks.Register(mkCheck(t, "c3", 3, false,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Pass, "c3", "ok-3", a, "")
+		},
+	))
+
+	sum, err := validator.Validate(context.Background(), "file.csv", []byte("data"), nil, checks.RunOptions{
+		FixMode:       checks.FixNone,
+		RerunAfterFix: false,
+		HardFailOnErr: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if m.expectLang != "" {
-		found := slices.Contains(langs, m.expectLang)
-		if !found {
-			return checks.Failf(m.name, "missing expected lang %q", m.expectLang)
+	// order by priority asc: c2, c1, c3
+	gotNames := []string{
+		sum.Outcomes[0].Result.Name,
+		sum.Outcomes[1].Result.Name,
+		sum.Outcomes[2].Result.Name,
+	}
+	wantNames := []string{"c2", "c1", "c3"}
+	for i := range wantNames {
+		if gotNames[i] != wantNames[i] {
+			t.Fatalf("order mismatch at %d: got %q want %q", i, gotNames[i], wantNames[i])
 		}
 	}
 
-	if (m.result == checks.Result{}) {
-		return checks.Passf(m.name, "ok")
+	if sum.Pass != 2 || sum.Warn != 1 || sum.Fail != 0 || sum.Error != 0 {
+		t.Fatalf("counters mismatch: PASS=%d WARN=%d FAIL=%d ERROR=%d", sum.Pass, sum.Warn, sum.Fail, sum.Error)
 	}
-
-	// ensure Name is set for realism
-	if m.result.Name == "" {
-		mr := m.result
-		mr.Name = m.name
-		return mr
+	if sum.AppliedFixes {
+		t.Fatalf("AppliedFixes=true, want false")
 	}
-	return m.result
+	if string(sum.FinalData) != "data" || sum.FinalPath != "file.csv" {
+		t.Fatalf("final state mismatch: path=%q data=%q", sum.FinalPath, string(sum.FinalData))
+	}
 }
 
-/*** helpers ***/
-
-func dataFixture() []byte {
-	return []byte("term;description\na;b\n")
-}
-
-/*** tests ***/
-
-func TestValidate_NoChecksRegistered(t *testing.T) {
+func TestValidate_FailFastStopsOnFail(t *testing.T) {
 	checks.Reset()
+	t.Cleanup(checks.Reset)
 
-	sum, err := Validate(dataFixture(), "file.csv", nil)
+	// fail-fast failing check
+	_, _ = checks.Register(mkCheck(t, "boom-fail", 1, true,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Fail, "boom-fail", "nope", a, "")
+		},
+	))
+
+	// later check that should NOT run
+	_, _ = checks.Register(mkCheck(t, "later", 2, false,
+		func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			t.Fatalf("later check should not run after fail-fast")
+			return checks.CheckOutcome{}
+		},
+	))
+
+	sum, err := validator.Validate(context.Background(), "file.csv", []byte("x"), nil, checks.RunOptions{
+		HardFailOnErr: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error (fail should not error): %v", err)
+	}
+	if !sum.EarlyExit || sum.EarlyCheck != "boom-fail" || sum.EarlyStatus != checks.Fail {
+		t.Fatalf("early-exit mismatch: %+v", sum)
+	}
+	if len(sum.Outcomes) != 1 {
+		t.Fatalf("expected 1 outcome, got %d", len(sum.Outcomes))
+	}
+	if sum.Fail != 1 || sum.Error != 0 {
+		t.Fatalf("counters mismatch: FAIL=%d ERROR=%d", sum.Fail, sum.Error)
+	}
+}
+
+func TestValidate_FailFastStopsOnError_WithHardFail(t *testing.T) {
+	checks.Reset()
+	t.Cleanup(checks.Reset)
+
+	// fail-fast erroring check
+	_, _ = checks.Register(mkCheck(t, "boom-error", 1, true,
+		func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+			return checks.OutcomeKeep(checks.Error, "boom-error", "kaboom", a, "")
+		},
+	))
+
+	sum, err := validator.Validate(context.Background(), "file.csv", []byte("x"), nil, checks.RunOptions{
+		HardFailOnErr: true,
+	})
+	if err == nil {
+		t.Fatalf("expected error on fail-fast ERROR with HardFailOnErr")
+	}
+	if !sum.EarlyExit || sum.EarlyCheck != "boom-error" || sum.EarlyStatus != checks.Error {
+		t.Fatalf("early-exit mismatch: %+v", sum)
+	}
+}
+
+func TestValidate_Propagate_DataAndPath_NilVsEmpty(t *testing.T) {
+	checks.Reset()
+	t.Cleanup(checks.Reset)
+
+	// Check1 changes Data to EMPTY SLICE []byte{} (non-nil), DidChange=true
+	_, _ = checks.Register(mkCheck(t, "make-empty", 1, false, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+		empty := []byte{} // non-nil, len==0 -> must be applied
+		final := checks.FixResult{Data: empty, Path: "", DidChange: true, Note: "set to empty"}
+		return checks.OutcomeWithFinal(checks.Warn, "make-empty", "emptied", final)
+	}))
+
+	// Check2 changes Path only
+	_, _ = checks.Register(mkCheck(t, "rename", 2, false, func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+		final := checks.FixResult{Data: nil, Path: "new.csv", DidChange: true, Note: "-> new.csv"}
+		return checks.OutcomeWithFinal(checks.Pass, "rename", "renamed", final)
+	}))
+
+	sum, err := validator.Validate(context.Background(), "old.csv", []byte("payload"), nil, checks.RunOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if sum.Pass != 0 || sum.Fail != 0 || sum.Error != 0 || len(sum.Results) != 0 {
-		t.Fatalf("unexpected summary: %+v", sum)
+	if !sum.AppliedFixes {
+		t.Fatalf("AppliedFixes=false, want true")
+	}
+	if len(sum.FinalData) != 0 { // must be empty after first check (non-nil empty slice)
+		t.Fatalf("FinalData length = %d, want 0", len(sum.FinalData))
+	}
+	if sum.FinalPath != "new.csv" {
+		t.Fatalf("FinalPath = %q, want %q", sum.FinalPath, "new.csv")
 	}
 }
 
-func TestValidate_AllPass(t *testing.T) {
+func TestValidate_ContextCanceled(t *testing.T) {
 	checks.Reset()
+	t.Cleanup(checks.Reset)
 
-	// critical pass
-	checks.Register(mockCheck{
-		name:     "crit-pass",
-		priority: 10,
-		failFast: true,
-		result:   checks.Result{Status: checks.Pass, Message: "ok"},
-	})
-	// normal pass
-	checks.Register(mockCheck{
-		name:     "norm-pass",
-		priority: 20,
-		failFast: false,
-		result:   checks.Result{Status: checks.Pass, Message: "ok"},
-	})
+	// Register at least one check (should not run due to canceled ctx)
+	_, _ = checks.Register(mkCheck(t, "noop", 1, false, func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+		t.Fatalf("check should not run when context is canceled")
+		return checks.CheckOutcome{}
+	}))
 
-	sum, err := Validate(dataFixture(), "x.csv", []string{"en"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before Validate
+
+	sum, err := validator.Validate(ctx, "file.csv", []byte("x"), nil, checks.RunOptions{})
+	if err == nil {
+		t.Fatalf("expected context error, got nil")
 	}
-	if sum.Pass != 2 || sum.Fail != 0 || sum.Error != 0 || len(sum.Results) != 2 {
-		t.Fatalf("unexpected summary: %+v", sum)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
-	// critical first, then normal (normal block may be sorted, but with single item it's trivial)
-	if sum.Results[0].Name != "crit-pass" || sum.Results[1].Name != "norm-pass" {
-		t.Fatalf("unexpected order: %+v", sum.Results)
+	if !sum.EarlyExit || sum.EarlyCheck != "context canceled" || sum.EarlyStatus != checks.Error {
+		t.Fatalf("early-exit mismatch on cancel: %+v", sum)
+	}
+	if len(sum.Outcomes) != 0 {
+		t.Fatalf("no outcomes expected when canceled early")
 	}
 }
 
-func TestValidate_FailFastStopsEarly(t *testing.T) {
+func TestValidate_ContextTimeoutDuringRun(t *testing.T) {
 	checks.Reset()
+	t.Cleanup(checks.Reset)
 
-	// First critical fails and should stop early.
-	checks.Register(mockCheck{
-		name:     "crit-fail",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Fail, Message: "nope"},
-	})
-	// Would pass, but must not run due to early exit.
-	checks.Register(mockCheck{
-		name:     "norm-pass",
-		priority: 100,
-		failFast: false,
-		result:   checks.Result{Status: checks.Pass, Message: "ok"},
-	})
+	// First check delays, second should not run if timeout triggers before loop iteration
+	_, _ = checks.Register(mkCheck(t, "slow", 1, false, func(ctx context.Context, a checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+		// simulate some work respecting context
+		select {
+		case <-time.After(200 * time.Millisecond):
+		case <-ctx.Done():
+		}
+		return checks.OutcomeKeep(checks.Pass, "slow", "done", a, "")
+	}))
+	_, _ = checks.Register(mkCheck(t, "never", 2, false, func(ctx context.Context, _ checks.Artifact, _ checks.RunOptions) checks.CheckOutcome {
+		t.Fatalf("second check should not run due to timeout check between iterations")
+		return checks.CheckOutcome{}
+	}))
 
-	sum, err := Validate(dataFixture(), "file.csv", nil)
-	if !errors.Is(err, ErrValidationFailed) {
-		t.Fatalf("expected ErrValidationFailed, got %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	sum, err := validator.Validate(ctx, "file.csv", []byte("x"), nil, checks.RunOptions{})
+	if err == nil {
+		t.Fatalf("expected timeout error, got nil")
 	}
-	if sum.EarlyExit != true || sum.EarlyCheck != "crit-fail" || sum.EarlyStatus != checks.Fail {
-		t.Fatalf("expected early exit info set, got: %+v", sum)
-	}
-	if sum.Pass != 0 || sum.Fail != 1 || sum.Error != 0 {
-		t.Fatalf("unexpected tallies: %+v", sum)
-	}
-	if len(sum.Results) != 1 || sum.Results[0].Name != "crit-fail" {
-		t.Fatalf("unexpected results: %+v", sum.Results)
-	}
-}
-
-func TestValidate_ErrorFailFastStopsEarly(t *testing.T) {
-	checks.Reset()
-
-	checks.Register(mockCheck{
-		name:     "crit-error",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Error, Message: "boom"},
-	})
-	// normal shouldn't run
-	checks.Register(mockCheck{
-		name:     "norm-pass",
-		priority: 2,
-		failFast: false,
-		result:   checks.Result{Status: checks.Pass},
-	})
-
-	sum, err := Validate(dataFixture(), "file.csv", nil)
-	if !errors.Is(err, ErrValidationFailed) {
-		t.Fatalf("expected ErrValidationFailed, got %v", err)
-	}
-	if sum.Pass != 0 || sum.Fail != 0 || sum.Error != 1 || len(sum.Results) != 1 {
-		t.Fatalf("unexpected summary: %+v", sum)
-	}
-	if sum.Results[0].Name != "crit-error" || sum.Results[0].Status != checks.Error {
-		t.Fatalf("unexpected first result: %+v", sum.Results[0])
-	}
-}
-
-func TestValidate_NormalFailuresAreCollectedAndSorted(t *testing.T) {
-	checks.Reset()
-
-	// critical pass to allow normal checks to run
-	checks.Register(mockCheck{
-		name:     "crit-pass",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Pass},
-	})
-
-	// two normal checks inserted in reverse name order to verify deterministic sort
-	checks.Register(mockCheck{
-		name:     "zzz-normal-fail",
-		priority: 100,
-		failFast: false,
-		result:   checks.Result{Status: checks.Fail, Message: "bad"},
-	})
-	checks.Register(mockCheck{
-		name:     "aaa-normal-fail",
-		priority: 100,
-		failFast: false,
-		result:   checks.Result{Status: checks.Fail, Message: "worse"},
-	})
-
-	sum, err := Validate(dataFixture(), "file.csv", nil)
-	if !errors.Is(err, ErrValidationFailed) {
-		t.Fatalf("expected ErrValidationFailed, got %v", err)
-	}
-
-	// Expect 1 critical + 2 normal
-	if len(sum.Results) != 3 {
-		t.Fatalf("unexpected results len: %d", len(sum.Results))
-	}
-
-	// normals should be sorted by name (then by status)
-	normal := sum.Results[1:]
-	got := []string{normal[0].Name, normal[1].Name}
-	want := []string{"aaa-normal-fail", "zzz-normal-fail"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("normal results not sorted deterministically\n got: %v\nwant: %v", got, want)
-	}
-}
-
-func TestValidate_RecoveryFromPanicCountsAsError(t *testing.T) {
-	checks.Reset()
-
-	// critical pass
-	checks.Register(mockCheck{
-		name:     "crit-pass",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Pass},
-	})
-
-	// normal panics
-	checks.Register(mockCheck{
-		name:       "norm-panic",
-		priority:   2,
-		failFast:   false,
-		panicOnRun: true,
-	})
-
-	sum, err := Validate(dataFixture(), "file.csv", nil)
-	if !errors.Is(err, ErrValidationFailed) {
-		t.Fatalf("expected ErrValidationFailed due to ERROR, got %v", err)
-	}
-
-	if sum.Error != 1 {
-		t.Fatalf("expected 1 error, got %d", sum.Error)
-	}
-
-	var names []string
-	for _, r := range sum.Results {
-		names = append(names, r.Name)
-	}
-	sort.Strings(names)
-	if names[0] != "crit-pass" || names[1] != "norm-panic" {
-		t.Fatalf("unexpected result names: %v", names)
-	}
-}
-
-func TestValidate_LangsArePassedThrough(t *testing.T) {
-	checks.Reset()
-
-	checks.Register(mockCheck{
-		name:     "crit-pass",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Pass},
-	})
-	// normal requires a particular language to PASS
-	checks.Register(mockCheck{
-		name:       "norm-lang-sensitive",
-		priority:   2,
-		failFast:   false,
-		expectLang: "de_DE",
-	})
-
-	// Missing expected lang -> should FAIL
-	sum, err := Validate(dataFixture(), "file.csv", []string{"en"})
-	if !errors.Is(err, ErrValidationFailed) {
-		t.Fatalf("expected ErrValidationFailed when lang missing; got %v", err)
-	}
-	if sum.Fail == 0 {
-		t.Fatalf("expected a failure due to missing lang propagation")
-	}
-
-	// With expected lang -> should PASS
-	checks.Reset()
-	checks.Register(mockCheck{name: "crit-pass", priority: 1, failFast: true, result: checks.Result{Status: checks.Pass}})
-	checks.Register(mockCheck{name: "norm-lang-sensitive", priority: 2, failFast: false, expectLang: "de_DE", result: checks.Result{Status: checks.Pass}})
-
-	sum, err = Validate(dataFixture(), "file.csv", []string{"en", "de_DE"})
-	if err != nil {
-		t.Fatalf("unexpected error with correct langs: %v", err)
-	}
-	if sum.Fail != 0 || sum.Error != 0 {
-		t.Fatalf("unexpected summary with langs: %+v", sum)
-	}
-}
-
-func TestValidate_CriticalWarnDoesNotStopEarly(t *testing.T) {
-	checks.Reset()
-
-	checks.Register(mockCheck{
-		name:     "crit-warn",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Warn, Message: "heads-up"},
-	})
-
-	checks.Register(mockCheck{
-		name:     "norm-pass",
-		priority: 2,
-		failFast: false,
-		result:   checks.Result{Status: checks.Pass, Message: "ok"},
-	})
-
-	sum, err := Validate(dataFixture(), "file.csv", nil)
-	if err != nil {
-		t.Fatalf("unexpected error (WARN must not fail): %v", err)
-	}
-
-	if sum.EarlyExit {
-		t.Fatalf("did not expect early exit on WARN, got: %+v", sum)
-	}
-
-	if sum.Warn != 1 || sum.Pass != 1 || sum.Fail != 0 || sum.Error != 0 {
-		t.Fatalf("unexpected tallies for WARN: %+v", sum)
-	}
-
-	if len(sum.Results) != 2 || sum.Results[0].Name != "crit-warn" || sum.Results[1].Name != "norm-pass" {
-		t.Fatalf("unexpected results/order: %+v", sum.Results)
-	}
-}
-
-func TestValidate_NormalWarnAggregatedNoFailure(t *testing.T) {
-	checks.Reset()
-
-	checks.Register(mockCheck{
-		name:     "crit-pass",
-		priority: 1,
-		failFast: true,
-		result:   checks.Result{Status: checks.Pass, Message: "ok"},
-	})
-
-	checks.Register(mockCheck{
-		name:     "norm-warn",
-		priority: 100,
-		failFast: false,
-		result:   checks.Result{Status: checks.Warn, Message: "something to look at"},
-	})
-	checks.Register(mockCheck{
-		name:     "norm-pass",
-		priority: 100,
-		failFast: false,
-		result:   checks.Result{Status: checks.Pass, Message: "fine"},
-	})
-
-	sum, err := Validate(dataFixture(), "file.csv", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: WARN must not fail validation, got %v", err)
-	}
-
-	if sum.Warn != 1 || sum.Pass != 2 || sum.Fail != 0 || sum.Error != 0 {
-		t.Fatalf("unexpected tallies: %+v", sum)
-	}
-
-	names := []string{sum.Results[1].Name, sum.Results[2].Name}
-	sort.Strings(names)
-	want := []string{"norm-pass", "norm-warn"}
-	if !reflect.DeepEqual(names, want) {
-		t.Fatalf("unexpected normal check names: got %v, want %v", names, want)
+	if !sum.EarlyExit || sum.EarlyCheck != "context canceled" || sum.EarlyStatus != checks.Error {
+		t.Fatalf("early-exit mismatch on timeout: %+v", sum)
 	}
 }
