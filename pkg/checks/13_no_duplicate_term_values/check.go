@@ -1,7 +1,10 @@
 package duplicate_term_values
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -45,81 +48,98 @@ func runWarnDuplicateTermValues(ctx context.Context, a checks.Artifact, opts che
 // We report up to 10 offending term groups in the message, each annotated with row numbers (1-based).
 func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: true, Msg: "no content to validate for duplicate term values"}
+	}
+
+	// CSV reader с разделителем ';'
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	// читаем первую непустую запись как хедер
+	var header []string
+	recIdx := 0 // 1-based номер текущей записи
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if ctx.Err() != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+			}
+			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to validate for duplicate term values)"}
+		}
+		recIdx++
+		nonEmpty := false
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				nonEmpty = true
+				break
+			}
+		}
+		if nonEmpty {
+			header = rec
+			break
 		}
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no content to validate for duplicate term values",
-		}
-	}
-
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no header line found (nothing to validate for duplicate term values)",
-		}
-	}
-
-	headerLine := lines[headerIdx]
-	if strings.TrimSpace(headerLine) == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "empty header line (nothing to validate for duplicate term values)",
-		}
-	}
-
-	headerCells := splitCells(headerLine)
-
-	// find term column index
+	// индекс колонки term (case-insensitive)
 	termCol := -1
-	for i, h := range headerCells {
-		if strings.ToLower(strings.TrimSpace(h)) == "term" {
+	for i, h := range header {
+		if strings.EqualFold(strings.TrimSpace(h), "term") {
 			termCol = i
 			break
 		}
 	}
 	if termCol < 0 {
-		// earlier checks should catch missing term column, so we skip loudly failing here
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no 'term' column found (skipping duplicate term check)",
-		}
+		return checks.ValidationResult{OK: true, Msg: "no 'term' column found (skipping duplicate term check)"}
 	}
 
-	// map termValue -> slice of row numbers (1-based)
+	// term -> список номеров строк (1-based по CSV-записям)
 	seen := make(map[string][]int)
 
-	for rowIdx := headerIdx + 1; rowIdx < len(lines); rowIdx++ {
-		rowRaw := lines[rowIdx]
-		if strings.TrimSpace(rowRaw) == "" {
+	rowNum := recIdx
+	const checkEvery = 1 << 12
+	for {
+		if (rowNum % checkEvery) == 0 {
+			if err := ctx.Err(); err != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+			}
+		}
+		rec, err := r.Read()
+		if err != nil {
+			break // EOF или парс-ошибка — другие чеки разрулят
+		}
+		rowNum++
+
+		// пропускаем полностью пустые строки
+		allEmpty := true
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				allEmpty = false
+				break
+			}
+		}
+		if allEmpty {
 			continue
 		}
-
-		cells := splitCells(rowRaw)
 
 		val := ""
-		if termCol < len(cells) {
-			val = strings.TrimSpace(cells[termCol])
+		if termCol < len(rec) {
+			val = strings.TrimSpace(rec[termCol])
 		}
 		if val == "" {
-			// empty terms are handled by the previous (priority 12) check,
-			// and don't count as "duplicates" here
-			continue
+			continue // пустые термы валидируются отдельным чеком
 		}
 
-		seen[val] = append(seen[val], rowIdx+1) // human line number
+		// важное: дубликаты считаем КЕЙС-СЕНСИТИВНО
+		seen[val] = append(seen[val], rowNum)
 	}
 
-	// build list of duplicates: any term that appears on >=2 rows
+	// собираем группы с >=2 вхождениями
 	type dupInfo struct {
 		term string
 		rows []int
@@ -127,46 +147,32 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 	var dups []dupInfo
 	for term, rows := range seen {
 		if len(rows) >= 2 {
-			dups = append(dups, dupInfo{
-				term: term,
-				rows: rows,
-			})
+			dups = append(dups, dupInfo{term: term, rows: rows})
 		}
 	}
-
 	if len(dups) == 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no duplicate term values",
-		}
+		return checks.ValidationResult{OK: true, Msg: "no duplicate term values"}
 	}
 
-	// format message, up to first 10 duplicate terms
+	// форматируем до 10 групп
 	limit := 10
 	if len(dups) < limit {
 		limit = len(dups)
 	}
-
 	var b strings.Builder
 	b.WriteString("duplicate term values found: ")
-
 	for i := 0; i < limit; i++ {
 		d := dups[i]
-
-		// cap number of rows we show for each term? we can just show them all, it's usually small.
 		b.WriteString(`"`)
 		b.WriteString(d.term)
 		b.WriteString(`" (rows `)
 		b.WriteString(joinIntSlice(d.rows, ", "))
 		b.WriteString(`)`)
-
 		if i != limit-1 {
 			b.WriteString("; ")
 		}
 	}
-
 	if len(dups) > limit {
-		// if there are more than we showed, say how many total groups
 		b.WriteString(" ... (total ")
 		b.WriteString(strconv.Itoa(len(dups)))
 		b.WriteString(" duplicate terms)")
@@ -176,20 +182,7 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 		b.WriteString(" duplicate terms)")
 	}
 
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: b.String(),
-		// Err stays nil → WARN, not ERROR
-	}
-}
-
-// splitCells splits on ';' and trims spaces around cells.
-func splitCells(s string) []string {
-	parts := strings.Split(s, ";")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
+	return checks.ValidationResult{OK: false, Msg: b.String()}
 }
 
 // joinIntSlice joins ints like "2, 5, 10".

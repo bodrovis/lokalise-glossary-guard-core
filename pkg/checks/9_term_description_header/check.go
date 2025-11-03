@@ -1,7 +1,10 @@
 package term_description_header
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -39,55 +42,56 @@ func runEnsureTermDescriptionHeader(ctx context.Context, a checks.Artifact, opts
 
 func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
+	}
+
+	// читаем первую непустую CSV-запись как заголовок
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	var header []string
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if ctx.Err() != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+			}
+			return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
+		}
+		// проверяем «непустую» запись
+		nonEmpty := false
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				nonEmpty = true
+				break
+			}
+		}
+		if nonEmpty {
+			header = rec
+			break
 		}
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: no usable content",
-		}
+	if len(header) < 2 {
+		return checks.ValidationResult{OK: false, Msg: "header has fewer than two columns; expected at least term;description"}
 	}
 
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: no usable content",
-		}
-	}
-
-	header := lines[headerIdx]
-	cells := strings.Split(header, ";")
-	if len(cells) < 2 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "header has fewer than two columns; expected at least term;description",
-		}
-	}
-
-	// check first two cells (lowercase already guaranteed by previous check)
-	first := strings.TrimSpace(cells[0])
-	second := strings.TrimSpace(cells[1])
-
+	first := strings.ToLower(strings.TrimSpace(header[0]))
+	second := strings.ToLower(strings.TrimSpace(header[1]))
 	if first == "term" && second == "description" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "header starts with term;description",
-		}
+		return checks.ValidationResult{OK: true, Msg: "header starts with term;description"}
 	}
 
-	// ok, figure out what went wrong for more useful message
-	hasTerm := false
-	hasDesc := false
-	for _, c := range cells {
-		switch cc := strings.TrimSpace(c); cc {
+	hasTerm, hasDesc := false, false
+	for _, c := range header {
+		cc := strings.ToLower(strings.TrimSpace(c))
+		switch cc {
 		case "term":
 			hasTerm = true
 		case "description":
@@ -97,26 +101,12 @@ func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) check
 
 	switch {
 	case hasTerm && hasDesc:
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "header contains term and description but not in required order or not at the start",
-		}
+		return checks.ValidationResult{OK: false, Msg: "header contains term and description but not in required order or not at the start"}
 	case hasTerm && !hasDesc:
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "header contains term but missing description column",
-		}
+		return checks.ValidationResult{OK: false, Msg: "header contains term but missing description column"}
 	case !hasTerm && hasDesc:
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "header contains description but missing term column",
-		}
+		return checks.ValidationResult{OK: false, Msg: "header contains description but missing term column"}
 	default:
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "header missing both term and description columns",
-		}
+		return checks.ValidationResult{OK: false, Msg: "header missing both term and description columns"}
 	}
 }
-
-// same helper as before

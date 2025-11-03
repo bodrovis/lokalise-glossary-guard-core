@@ -1,7 +1,10 @@
 package orphan_locale_descriptions
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -45,53 +48,52 @@ func runWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact, opt
 // Example bad: "en_description" exists but "en" doesn't.
 func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: true, Msg: "no content to validate for orphan locale descriptions"}
+	}
+
+	// читаем первую НЕПУСТУЮ CSV-запись как хедер
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	var header []string
+	for {
+		rec, err := r.Read()
+		if err != nil || rec == nil {
+			if ctx.Err() != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+			}
+			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to validate for orphan locale descriptions)"}
+		}
+		nonEmpty := false
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				nonEmpty = true
+				break
+			}
+		}
+		if nonEmpty {
+			header = rec
+			break
 		}
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no content to validate for orphan locale descriptions",
-		}
-	}
-
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no header line found (nothing to validate for orphan locale descriptions)",
-		}
-	}
-
-	headerLine := lines[headerIdx]
-	if strings.TrimSpace(headerLine) == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "empty header line (nothing to validate for orphan locale descriptions)",
-		}
-	}
-
-	cols := checks.SplitHeaderCells(headerLine)
-
-	// collect all column names lowercase
+	// соберём все колонки (lc) и кандидатов вида *_description (base в lc)
 	allColsLC := make(map[string]struct{})
-	// collect bases for *_description
-	orphanCandidates := make(map[string]struct{}) // base -> seen <base>_description
+	orphanCandidates := make(map[string]struct{})
 
-	for _, c := range cols {
+	for _, c := range header {
 		nameTrim := strings.TrimSpace(c)
 		lc := strings.ToLower(nameTrim)
-
 		if lc == "" {
 			continue
 		}
-
 		allColsLC[lc] = struct{}{}
 
 		if strings.HasSuffix(lc, "_description") {
@@ -106,28 +108,22 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 	var orphans []string
 	for base := range orphanCandidates {
 		if _, ok := allColsLC[base]; !ok {
-			// we have "<base>_description", but no "<base>"
 			orphans = append(orphans, base)
 		}
 	}
 
 	if len(orphans) == 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no orphan *_description columns",
-		}
+		return checks.ValidationResult{OK: true, Msg: "no orphan *_description columns"}
 	}
 
-	// message (show up to 10)
+	// сообщение (до 10 штук)
 	display := orphans
 	if len(display) > 10 {
 		display = display[:10]
 	}
-
 	var b strings.Builder
 	b.WriteString("orphan *_description columns without matching base locale: ")
 	b.WriteString(strings.Join(display, ", "))
-
 	if len(orphans) > len(display) {
 		b.WriteString(" ... (total ")
 		b.WriteString(strconv.Itoa(len(orphans)))
@@ -138,8 +134,5 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 		b.WriteString(")")
 	}
 
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: b.String(),
-	}
+	return checks.ValidationResult{OK: false, Msg: b.String()}
 }

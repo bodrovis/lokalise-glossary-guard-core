@@ -2,6 +2,7 @@ package valid_extension
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -42,28 +43,28 @@ func validateCSVExt(ctx context.Context, a checks.Artifact) checks.ValidationRes
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	path := strings.TrimSpace(a.Path)
-	if path == "" {
+	base := strings.TrimSpace(a.Path)
+	if base == "" {
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "empty path: cannot validate extension",
 		}
 	}
 
-	ext := filepath.Ext(path)
+	ext := filepath.Ext(base)
 	if strings.EqualFold(ext, ".csv") {
-		return checks.ValidationResult{OK: true, Msg: "extension is .csv"}
+		return checks.ValidationResult{OK: true, Msg: `extension is ".csv"`}
 	}
 
 	if ext == "" {
 		return checks.ValidationResult{
 			OK:  false,
-			Msg: "invalid file extension: none (expected .csv)",
+			Msg: `invalid file extension: "" (expected ".csv")`,
 		}
 	}
 
 	return checks.ValidationResult{
 		OK:  false,
-		Msg: "invalid file extension: " + ext + " (expected .csv)",
+		Msg: fmt.Sprintf(`invalid file extension: %q (expected ".csv")`, ext),
 	}
 }

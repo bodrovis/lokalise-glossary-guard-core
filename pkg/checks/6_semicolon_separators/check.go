@@ -1,6 +1,7 @@
 package semicolon_separator
 
 import (
+	"bytes"
 	"context"
 	"encoding/csv"
 	"strings"
@@ -43,10 +44,10 @@ func validateSemicolonSeparated(ctx context.Context, a checks.Artifact) checks.V
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	data := strings.TrimSpace(string(a.Data))
-	if data == "" {
+	if len(bytes.TrimSpace(a.Data)) == 0 {
 		return checks.ValidationResult{OK: false, Msg: "cannot detect separators: no usable content"}
 	}
+	data := string(a.Data)
 
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
@@ -91,31 +92,28 @@ func validateSemicolonSeparated(ctx context.Context, a checks.Artifact) checks.V
 func attemptRectParse(data string, delim rune) (bool, [][]string) {
 	r := csv.NewReader(strings.NewReader(data))
 	r.Comma = delim
-	r.FieldsPerRecord = -1 // allow ragged for now; we'll check manually
-	r.LazyQuotes = true    // be forgiving
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
 
 	recs, err := r.ReadAll()
-	if err != nil {
-		return false, nil
-	}
-	if len(recs) == 0 {
+	if err != nil || len(recs) == 0 {
 		return false, nil
 	}
 
-	// find first non-empty row length
 	var width int
 	for _, row := range recs {
-		if len(row) > 0 && len(row) != 1 || strings.TrimSpace(row[0]) != "" {
+		if len(row) == 0 {
+			continue
+		}
+		if len(row) > 1 || (len(row) == 1 && strings.TrimSpace(row[0]) != "") {
 			width = len(row)
 			break
 		}
 	}
 	if width <= 1 {
-		// table with only 0 or 1 column — not worth "converting"
 		return false, nil
 	}
 
-	// verify all rows have same length
 	for _, row := range recs {
 		if len(row) == 0 {
 			continue
@@ -124,6 +122,5 @@ func attemptRectParse(data string, delim rune) (bool, [][]string) {
 			return false, nil
 		}
 	}
-
 	return true, recs
 }

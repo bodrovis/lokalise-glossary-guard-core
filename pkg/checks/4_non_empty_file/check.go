@@ -1,8 +1,8 @@
 package non_empty_file
 
 import (
+	"bytes"
 	"context"
-	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
@@ -29,7 +29,7 @@ func runEnsureNotEmpty(ctx context.Context, a checks.Artifact, opts checks.RunOp
 		Name:             checkName,
 		Validate:         validateNotEmpty,
 		Fix:              fixAddHeaderIfEmpty,
-		PassMsg:          "file is not empty",
+		PassMsg:          "file has content",
 		FixedMsg:         "inserted CSV header",
 		AppliedMsg:       "auto-fix applied (inserted CSV header)",
 		StatusAfterFixed: checks.Pass,
@@ -41,8 +41,8 @@ func validateNotEmpty(ctx context.Context, a checks.Artifact) checks.ValidationR
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	if len(strings.TrimSpace(string(a.Data))) == 0 {
+	if len(bytes.TrimSpace(a.Data)) == 0 {
 		return checks.ValidationResult{OK: false, Msg: "empty file: no data"}
 	}
-	return checks.ValidationResult{OK: true}
+	return checks.ValidationResult{OK: true, Msg: "non-empty"}
 }

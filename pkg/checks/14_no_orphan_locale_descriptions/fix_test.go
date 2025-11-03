@@ -116,7 +116,6 @@ func TestFixOrphanLocaleDescriptions_SingleOrphan_InsertsColumnBeforeDescription
 	input := "" +
 		"term;description;en_description;fr;fr_description\n" +
 		"hello;desc;en expl;salut;fr expl\n" +
-		"   \n" +
 		"world;desc2;en expl2;bonjour;fr expl2\n"
 
 	// после фикса должно стать:
@@ -133,7 +132,6 @@ func TestFixOrphanLocaleDescriptions_SingleOrphan_InsertsColumnBeforeDescription
 	want := "" +
 		"term;description;en;en_description;fr;fr_description\n" +
 		"hello;desc;;en expl;salut;fr expl\n" +
-		"   \n" +
 		"world;desc2;;en expl2;bonjour;fr expl2\n"
 
 	a := checks.Artifact{

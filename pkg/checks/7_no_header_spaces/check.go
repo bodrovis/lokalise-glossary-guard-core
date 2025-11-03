@@ -1,7 +1,11 @@
 package no_spaces_in_header
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
+	"strconv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -40,50 +44,41 @@ func runNoSpacesInHeader(ctx context.Context, a checks.Artifact, opts checks.Run
 
 func validateNoSpacesInHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: false, Msg: "cannot check header: empty content"}
+	}
+
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	record, err := r.Read()
+	if err != nil || len(record) == 0 {
+		if ctx.Err() != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+		}
+		return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
+	}
+
+	var badCols []string
+	for i, col := range record {
+		if err := ctx.Err(); err != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		}
+		if col != strings.TrimSpace(col) {
+			badCols = append(badCols, strconv.Itoa(i+1)) // 1-based index
 		}
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
+	if len(badCols) > 0 {
 		return checks.ValidationResult{
 			OK:  false,
-			Msg: "cannot check header: empty content",
-		}
-	}
-
-	lines := strings.Split(raw, "\n")
-	if len(lines) == 0 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: empty content",
-		}
-	}
-
-	header := lines[0]
-
-	start := 0
-	for i := 0; i <= len(header); i++ {
-		if i == len(header) || header[i] == ';' {
-			c := header[start:i]
-			start = i + 1
-
-			if err := ctx.Err(); err != nil {
-				return checks.ValidationResult{
-					OK:  false,
-					Msg: "validation cancelled",
-					Err: err,
-				}
-			}
-			if c != strings.TrimSpace(c) {
-				return checks.ValidationResult{
-					OK:  false,
-					Msg: "header has leading/trailing spaces in column names",
-				}
-			}
+			Msg: "header has leading/trailing spaces in column names at positions: " + strings.Join(badCols, ", "),
 		}
 	}
 

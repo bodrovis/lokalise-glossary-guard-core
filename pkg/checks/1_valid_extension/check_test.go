@@ -59,7 +59,7 @@ func TestValidateCSVExt_Pass(t *testing.T) {
 		if !res.OK {
 			t.Fatalf("expected ok for %q, got false, msg=%q", p, res.Msg)
 		}
-		if res.Msg != "extension is .csv" {
+		if res.Msg != "extension is \".csv\"" {
 			t.Fatalf("expected msg for %q, got %q", p, res.Msg)
 		}
 	}
@@ -74,9 +74,9 @@ func TestValidateCSVExt_FailCases(t *testing.T) {
 	}
 	cases := []tc{
 		{"", "empty path: cannot validate extension"},
-		{"readme.txt", "invalid file extension: .txt (expected .csv)"},
-		{"noext", "invalid file extension: none (expected .csv)"},
-		{strings.TrimSpace("  report.TSV  "), "invalid file extension: .TSV (expected .csv)"},
+		{"readme.txt", "invalid file extension: \".txt\" (expected \".csv\")"},
+		{"noext", "invalid file extension: \"\" (expected \".csv\")"},
+		{strings.TrimSpace("  report.TSV  "), "invalid file extension: \".TSV\" (expected \".csv\")"},
 	}
 
 	for _, c := range cases {

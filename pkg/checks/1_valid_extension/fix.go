@@ -26,9 +26,9 @@ func fixCSVExt(ctx context.Context, a checks.Artifact) (checks.FixResult, error)
 		}, nil
 	}
 
-	ext := filepath.Ext(fp)             // ".txt" | ".CSV" | ""
-	base := strings.TrimSuffix(fp, ext) // "name" | "archive.tar"
-	base = strings.TrimRight(base, ".") // "name." -> "name"
+	ext := filepath.Ext(fp)              // ".txt" | ".CSV" | ""
+	base := strings.TrimSuffix(fp, ext)  // "name" | "archive.tar"
+	base = strings.TrimSuffix(base, ".") // "name." -> "name"
 
 	newPath := base + ".csv"
 	changed := newPath != fp

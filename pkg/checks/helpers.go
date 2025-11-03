@@ -141,20 +141,29 @@ func OutcomeKeep(st Status, name, msg string, a Artifact, note string) CheckOutc
 	}
 }
 
-func FirstNonEmptyLineIndex(lines []string) int {
-	for i, ln := range lines {
-		if strings.TrimSpace(ln) != "" {
-			return i
+func DetectLineEnding(b []byte) string {
+	crlf := 0
+	lf := 0
+	for i, ch := range b {
+		if ch == '\n' {
+			if i > 0 && b[i-1] == '\r' {
+				crlf++
+			} else {
+				lf++
+			}
 		}
 	}
-	return -1
+	if crlf > lf {
+		return "\r\n"
+	}
+	return "\n"
 }
 
-func SplitHeaderCells(s string) []string {
-	raw := strings.Split(s, ";")
-	out := make([]string, len(raw))
-	for i := range raw {
-		out[i] = strings.TrimSpace(raw[i])
+func AnyNonEmpty(rec []string) bool {
+	for _, v := range rec {
+		if strings.TrimSpace(v) != "" {
+			return true
+		}
 	}
-	return out
+	return false
 }

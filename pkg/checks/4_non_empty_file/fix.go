@@ -1,6 +1,7 @@
 package non_empty_file
 
 import (
+	"bytes"
 	"context"
 	"strings"
 
@@ -21,15 +22,16 @@ func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResu
 		return checks.FixResult{}, err
 	}
 
-	if len(strings.TrimSpace(string(a.Data))) != 0 {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "file already has data; no header inserted",
-		}, nil
+	data := a.Data
+	// strip optional UTF-8 BOM
+	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+		data = data[3:]
+	}
+	if len(bytes.TrimSpace(data)) != 0 {
+		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "file already has data; no header inserted"}, nil
 	}
 
+	seen := make(map[string]struct{}, len(a.Langs))
 	fields := make([]string, 0, len(baseHeaderFields)+len(a.Langs)*2)
 	fields = append(fields, baseHeaderFields...)
 	for _, lang := range a.Langs {
@@ -37,6 +39,10 @@ func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResu
 		if lc == "" {
 			continue
 		}
+		if _, ok := seen[lc]; ok {
+			continue
+		}
+		seen[lc] = struct{}{}
 		fields = append(fields, lc, lc+"_description")
 	}
 

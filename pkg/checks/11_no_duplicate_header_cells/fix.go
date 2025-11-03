@@ -1,7 +1,9 @@
 package duplicate_header_cells
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -14,36 +16,88 @@ func fixDuplicateHeaderCells(ctx context.Context, a checks.Artifact) (checks.Fix
 		return checks.FixResult{}, err
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
+	in := a.Data
+	if len(bytes.TrimSpace(in)) == 0 {
 		return checks.NoFix(a, "no usable content to fix")
 	}
 
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
+	// Preserve BOM
+	var bom []byte
+	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
+		bom, in = in[:3], in[3:]
+	}
+
+	// Detect original line ending + final newline presence
+	lineSep := checks.DetectLineEnding(in) // "\r\n" | "\n"
+	keepFinal := bytes.HasSuffix(in, []byte("\n"))
+
+	// Find first non-empty line (header start); keep everything before it verbatim
+	headerStart := 0
+	found := false
+	pos := 0
+	for pos <= len(in) {
+		if err := ctx.Err(); err != nil {
+			return checks.FixResult{}, err
+		}
+		nlRel := bytes.IndexByte(in[pos:], '\n')
+		var line []byte
+		nextPos := len(in)
+		if nlRel >= 0 {
+			line = in[pos : pos+nlRel] // exclude '\n'
+			nextPos = pos + nlRel + 1  // skip '\n'
+		} else {
+			line = in[pos:]
+		}
+		// strip trailing '\r' for CRLF
+		if n := len(line); n > 0 && line[n-1] == '\r' {
+			line = line[:n-1]
+		}
+		if len(bytes.TrimSpace(line)) != 0 {
+			headerStart = pos
+			found = true
+			break
+		}
+		if nlRel < 0 {
+			break
+		}
+		pos = nextPos
+	}
+	if !found {
 		return checks.NoFix(a, "no header line found")
 	}
 
-	// header cells are assumed already trimmed by previous steps in the pipeline
-	headerLine := lines[headerIdx]
-	origCols := strings.Split(headerLine, ";")
+	before := in[:headerStart]
+	after := in[headerStart:] // starts at header
 
-	// decide which column indices to keep
-	// first time we see normalized name -> keep
-	// second+ time -> drop
-	seen := make(map[string]bool)
-	keepIdx := make([]int, 0, len(origCols))
+	// Parse CSV (from header) with semicolons
+	r := csv.NewReader(bytes.NewReader(after))
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
 
-	// we also build a list of removed names for Note
-	removedNames := []string{}
+	records, err := r.ReadAll()
+	if err != nil || len(records) == 0 {
+		if ctx.Err() != nil {
+			return checks.FixResult{}, ctx.Err()
+		}
+		return checks.NoFix(a, "cannot parse CSV with semicolon delimiter")
+	}
 
-	for i, col := range origCols {
+	// header is the first record here (we started at first non-empty line)
+	header := records[0]
+	if len(header) == 0 {
+		return checks.NoFix(a, "empty header record")
+	}
+
+	// Decide which column indices to keep (first occurrence per normalized name)
+	seen := make(map[string]bool, len(header))
+	keepIdx := make([]int, 0, len(header))
+	removedNames := make([]string, 0)
+
+	for i, col := range header {
 		name := strings.TrimSpace(col)
 		lc := strings.ToLower(name)
-
-		if _, ok := seen[lc]; ok {
-			// duplicate -> skip, and remember what we removed
+		if seen[lc] {
 			removedNames = append(removedNames, name)
 			continue
 		}
@@ -51,50 +105,74 @@ func fixDuplicateHeaderCells(ctx context.Context, a checks.Artifact) (checks.Fix
 		keepIdx = append(keepIdx, i)
 	}
 
-	// if we didn't actually remove anything, report no-fix
 	if len(removedNames) == 0 {
 		return checks.NoFix(a, "no duplicate header columns to remove")
 	}
 
-	// rebuild header with only kept columns
-	newHeaderCells := make([]string, 0, len(keepIdx))
-	for _, idx := range keepIdx {
-		if idx < len(origCols) {
-			newHeaderCells = append(newHeaderCells, strings.TrimSpace(origCols[idx]))
-		} else {
-			newHeaderCells = append(newHeaderCells, "")
+	// Rebuild all rows according to keepIdx (moves entire columns)
+	outRecs := make([][]string, len(records))
+	for i := 0; i < len(records); i++ {
+		if err := ctx.Err(); err != nil {
+			return checks.FixResult{}, err
 		}
-	}
-	lines[headerIdx] = strings.Join(newHeaderCells, ";")
-
-	// rebuild every data row after headerIdx using the same keepIdx projection
-	for row := headerIdx + 1; row < len(lines); row++ {
-		rowRaw := lines[row]
-		// leave fully empty / whitespace-only lines as-is
-		if strings.TrimSpace(rowRaw) == "" {
-			continue
-		}
-
-		values := strings.Split(rowRaw, ";")
-		newValues := make([]string, 0, len(keepIdx))
-
-		for _, idx := range keepIdx {
-			if idx < len(values) {
-				newValues = append(newValues, values[idx])
+		row := records[i]
+		newRow := make([]string, len(keepIdx))
+		for j, idx := range keepIdx {
+			if idx >= 0 && idx < len(row) {
+				newRow[j] = row[idx]
 			} else {
-				newValues = append(newValues, "")
+				newRow[j] = ""
 			}
 		}
-
-		lines[row] = strings.Join(newValues, ";")
+		outRecs[i] = newRow
 	}
 
-	out := strings.Join(lines, "\n")
+	// Serialize back
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	w.Comma = ';'
+	for i := 0; i < len(outRecs); i++ {
+		if err := ctx.Err(); err != nil {
+			return checks.FixResult{}, err
+		}
+		if err := w.Write(outRecs[i]); err != nil {
+			return checks.FixResult{
+				Data:      a.Data,
+				Path:      "",
+				DidChange: false,
+				Note:      "failed to serialize CSV: " + err.Error(),
+			}, err
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return checks.FixResult{
+			Data:      a.Data,
+			Path:      "",
+			DidChange: false,
+			Note:      "failed to flush CSV: " + err.Error(),
+		}, err
+	}
+
+	outTail := buf.Bytes() // uses '\n'
+	// normalize line endings
+	if lineSep == "\r\n" {
+		outTail = bytes.ReplaceAll(outTail, []byte("\n"), []byte("\r\n"))
+	}
+	// preserve absence of final NL if originally none
+	if !keepFinal && bytes.HasSuffix(outTail, []byte(lineSep)) {
+		outTail = outTail[:len(outTail)-len(lineSep)]
+	}
+
+	// stitch: BOM + before + converted tail
+	out := make([]byte, 0, len(bom)+len(before)+len(outTail))
+	out = append(out, bom...)
+	out = append(out, before...)
+	out = append(out, outTail...)
 
 	note := "removed duplicate header columns: " + strings.Join(removedNames, ", ")
-
 	return checks.FixResult{
-		Data:      []byte(out),
+		Data:      out,
 		Path:      "",
 		DidChange: true,
 		Note:      note,

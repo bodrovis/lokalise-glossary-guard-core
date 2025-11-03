@@ -22,7 +22,7 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 		return checks.FixResult{Data: in, Path: "", DidChange: false, Note: "empty file"}, nil
 	}
 
-	sep := detectLineEnding(in)
+	sep := checks.DetectLineEnding(in)
 
 	sc := bufio.NewScanner(bytes.NewReader(in))
 
@@ -45,6 +45,9 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 		if wroteAny {
 			out.WriteString(sep) // separator ONLY between kept lines
 		}
+		if n := len(line); n > 0 && line[n-1] == '\r' {
+			line = line[:n-1]
+		}
 		out.Write(line)
 		wroteAny = true
 	}
@@ -61,23 +64,4 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 		note = "removed 1 empty line"
 	}
 	return checks.FixResult{Data: out.Bytes(), Path: "", DidChange: true, Note: note}, nil
-}
-
-// detectLineEnding picks the predominant line separator ("\r\n" vs "\n").
-func detectLineEnding(b []byte) string {
-	crlf := 0
-	lf := 0
-	for i, ch := range b {
-		if ch == '\n' {
-			if i > 0 && b[i-1] == '\r' {
-				crlf++
-			} else {
-				lf++
-			}
-		}
-	}
-	if crlf > lf {
-		return "\r\n"
-	}
-	return "\n"
 }

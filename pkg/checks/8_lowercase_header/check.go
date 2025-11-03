@@ -1,7 +1,11 @@
 package lowercase_header
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
+	"strconv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -33,9 +37,7 @@ func init() {
 	}
 }
 
-// policy:
-// - FailAs: WARN → не стопаем пайплайн
-// - StatusAfterFixed: PASS → если автофикс прошёл и ревалиднули ок, считаем PASS
+// policy: FailAs WARN, StatusAfterFixed PASS — оставляем как есть
 func runEnsureLowercaseHeader(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -52,73 +54,49 @@ func runEnsureLowercaseHeader(ctx context.Context, a checks.Artifact, opts check
 
 func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
+	}
+
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	header, err := r.Read()
+	if err != nil || len(header) == 0 {
+		if ctx.Err() != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+		}
+		return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
+	}
+
+	var bad []string
+	for i, col := range header {
+		if err := ctx.Err(); err != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		}
+		trimmed := strings.TrimSpace(col)
+		if trimmed == "" {
+			continue
+		}
+		lc := strings.ToLower(trimmed)
+		if _, want := requiredLowercaseCols[lc]; !want {
+			continue
+		}
+		if trimmed != lc {
+			bad = append(bad, strconv.Itoa(i+1))
+		}
+	}
+
+	if len(bad) > 0 {
 		return checks.ValidationResult{
 			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
+			Msg: "some service columns in header are not lowercase at positions: " + strings.Join(bad, ", "),
 		}
 	}
-
-	raw := string(a.Data)
-	if raw == "" {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: no usable content",
-		}
-	}
-
-	lines := splitLinesPreserveAll(raw)
-	headerLineIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerLineIdx < 0 {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: no usable content",
-		}
-	}
-
-	header := lines[headerLineIdx]
-
-	start := 0
-	for i := 0; i <= len(header); i++ {
-		if i == len(header) || header[i] == ';' {
-			cell := header[start:i]
-			start = i + 1
-
-			if err := ctx.Err(); err != nil {
-				return checks.ValidationResult{
-					OK:  false,
-					Msg: "validation cancelled",
-					Err: err,
-				}
-			}
-
-			trimmed := strings.TrimSpace(cell)
-			if trimmed == "" {
-				continue
-			}
-
-			normalized := strings.ToLower(trimmed)
-
-			if _, isRequired := requiredLowercaseCols[normalized]; !isRequired {
-				continue
-			}
-
-			if trimmed != normalized {
-				return checks.ValidationResult{
-					OK:  false,
-					Msg: "some service columns in header are not lowercase (expected: term;description;casesensitive;translatable;forbidden;tags)",
-				}
-			}
-		}
-	}
-
-	return checks.ValidationResult{
-		OK:  true,
-		Msg: "header service columns are already lowercase",
-	}
-}
-
-// helper: split into lines without dropping anything.
-func splitLinesPreserveAll(s string) []string {
-	return strings.Split(s, "\n")
+	return checks.ValidationResult{OK: true, Msg: "header service columns are already lowercase"}
 }

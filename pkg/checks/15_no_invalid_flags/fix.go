@@ -1,75 +1,100 @@
 package invalid_flags
 
 import (
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-// fixNoInvalidFlags goes through the watched flag columns and tries to normalize
-// values to "yes"/"no" if it's obviously mappable.
-// Rules:
-//   - trim spaces, lowercase
-//   - "yes", "y", "true", "1"  -> "yes"
-//   - "no", "n", "false", "0"  -> "no"
-//   - "" (empty after trim)    -> leave as is (not auto-fixed)
-//   - anything else            -> leave as is
-//
-// If at least one cell changed, we return DidChange=true and new data.
-// If nothing changed, we return Errchecks.NoFix.
-// splitRowCellsRaw keeps values verbatim (no TrimSpace). Use this in fix so we don't
-// accidentally strip spaces from user content in non-flag columns.
-func splitRowCellsRaw(s string) []string {
-	return strings.Split(s, ";")
-}
-
-// fixNoInvalidFlags tries to normalize obvious variants of yes/no in watchedCols only.
-// We DO NOT touch other cells except those columns, and we DO NOT trim other cells.
-//
-// Rules:
-//   - take that cell's raw string, make lc-trimmed copy
-//   - "yes","y","true","1"  => "yes"
-//   - "no","n","false","0"  => "no"
-//   - otherwise unchanged
-//
-// If nothing changes -> ErrNoFix so pipeline still FAILs.
 func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
-
-	raw := string(a.Data)
-	if raw == "" {
+	in := a.Data
+	if len(bytes.TrimSpace(in)) == 0 {
 		return checks.NoFix(a, "no usable content to fix")
 	}
 
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
+	// Preserve BOM
+	var bom []byte
+	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
+		bom, in = in[:3], in[3:]
+	}
+	// Line endings / final NL
+	lineSep := checks.DetectLineEnding(in) // "\r\n" | "\n"
+	keepFinal := bytes.HasSuffix(in, []byte("\n"))
+
+	// Найти старт первой непустой строки (хедер); всё до неё — как есть
+	headerStart := 0
+	found := false
+	pos := 0
+	for pos <= len(in) {
+		if err := ctx.Err(); err != nil {
+			return checks.FixResult{}, err
+		}
+		nlRel := bytes.IndexByte(in[pos:], '\n')
+		var line []byte
+		nextPos := len(in)
+		if nlRel >= 0 {
+			line = in[pos : pos+nlRel]
+			nextPos = pos + nlRel + 1
+		} else {
+			line = in[pos:]
+		}
+		if n := len(line); n > 0 && line[n-1] == '\r' {
+			line = line[:n-1] // strip CR of CRLF
+		}
+		if len(bytes.TrimSpace(line)) != 0 {
+			headerStart = pos
+			found = true
+			break
+		}
+		if nlRel < 0 {
+			break
+		}
+		pos = nextPos
+	}
+	if !found {
 		return checks.NoFix(a, "no header line found")
 	}
 
-	headerLine := lines[headerIdx]
-	if strings.TrimSpace(headerLine) == "" {
+	before := in[:headerStart]
+	after := in[headerStart:] // начинается с хедера
+
+	// Парсим CSV с ';'
+	r := csv.NewReader(bytes.NewReader(after))
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	records, err := r.ReadAll()
+	if err != nil || len(records) == 0 {
+		if ctx.Err() != nil {
+			return checks.FixResult{}, ctx.Err()
+		}
+		return checks.NoFix(a, "cannot parse CSV with semicolon delimiter")
+	}
+
+	// Хедер — первая запись тут
+	header := records[0]
+	if !checks.AnyNonEmpty(header) {
 		return checks.NoFix(a, "empty header line")
 	}
 
-	headerCells := checks.SplitHeaderCells(headerLine)
-
-	// map watchedCol -> header index
+	// Индексы наблюдаемых колонок
 	colPos := make(map[string]int, len(watchedCols))
 	for _, w := range watchedCols {
 		colPos[w] = -1
 	}
-	for idx, h := range headerCells {
+	for i, h := range header {
 		lc := strings.ToLower(strings.TrimSpace(h))
-		if _, ok := colPos[lc]; ok {
-			colPos[lc] = idx
+		if _, ok := colPos[lc]; ok && colPos[lc] == -1 {
+			colPos[lc] = i
 		}
 	}
-
-	// fast exit: if we don't have ANY watched column actually present
 	allMissing := true
 	for _, w := range watchedCols {
 		if colPos[w] >= 0 {
@@ -82,70 +107,96 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 	}
 
 	changed := false
-	newLines := make([]string, 0, len(lines))
+	outRecs := make([][]string, len(records))
 
-	// copy pre-header lines verbatim
-	for i := 0; i < headerIdx; i++ {
-		newLines = append(newLines, lines[i])
-	}
+	// Копируем хедер как есть
+	outRecs[0] = records[0]
 
-	// copy header line verbatim
-	newLines = append(newLines, headerLine)
-
-	// process rows
-	for rowIdx := headerIdx + 1; rowIdx < len(lines); rowIdx++ {
-		rowRaw := lines[rowIdx]
-
-		// keep empty/whitespace rows verbatim
-		if strings.TrimSpace(rowRaw) == "" {
-			newLines = append(newLines, rowRaw)
+	// Остальные строки — нормализуем только флаговые колонки
+	for i := 1; i < len(records); i++ {
+		if err := ctx.Err(); err != nil {
+			return checks.FixResult{}, err
+		}
+		row := records[i]
+		// пустые строки сохраняем как пустую запись (запишем blank line)
+		if !checks.AnyNonEmpty(row) {
+			outRecs[i] = nil
 			continue
 		}
-
-		cells := splitRowCellsRaw(rowRaw)
+		newRow := make([]string, len(row))
+		copy(newRow, row)
 
 		for _, w := range watchedCols {
-			pos := colPos[w]
-			if pos < 0 || pos >= len(cells) {
+			idx := colPos[w]
+			if idx < 0 || idx >= len(newRow) {
 				continue
 			}
-
-			origVal := cells[pos]
-			normVal := normalizeFlagValue(origVal)
-			if normVal != origVal {
-				cells[pos] = normVal
+			orig := newRow[idx]
+			norm := normalizeFlagValue(orig)
+			if norm != orig {
+				newRow[idx] = norm
 				changed = true
 			}
 		}
-
-		newLines = append(newLines, strings.Join(cells, ";"))
+		outRecs[i] = newRow
 	}
 
 	if !changed {
 		return checks.NoFix(a, "no flag values to normalize")
 	}
 
-	out := strings.Join(newLines, "\n")
+	// Сериализуем назад
+	var buf bytes.Buffer
+	w := csv.NewWriter(&buf)
+	w.Comma = ';'
+	for _, rec := range outRecs {
+		if err := ctx.Err(); err != nil {
+			return checks.FixResult{}, err
+		}
+		if rec == nil {
+			// чистая пустая строка
+			if _, err := buf.WriteString(lineSep); err != nil {
+				return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to write blank line"}, err
+			}
+			continue
+		}
+		if err := w.Write(rec); err != nil {
+			return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to serialize CSV: " + err.Error()}, err
+		}
+	}
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to flush CSV: " + err.Error()}, err
+	}
+
+	outTail := buf.Bytes()
+	if lineSep == "\r\n" {
+		outTail = bytes.ReplaceAll(outTail, []byte("\n"), []byte("\r\n"))
+	}
+	if !keepFinal && bytes.HasSuffix(outTail, []byte(lineSep)) {
+		outTail = outTail[:len(outTail)-len(lineSep)]
+	}
+
+	out := make([]byte, 0, len(bom)+len(before)+len(outTail))
+	out = append(out, bom...)
+	out = append(out, before...)
+	out = append(out, outTail...)
 
 	return checks.FixResult{
-		Data:      []byte(out),
+		Data:      out,
 		Path:      "",
 		DidChange: true,
 		Note:      "normalized flag columns to yes/no",
 	}, nil
 }
 
-// normalizeFlagValue maps obvious yes/no synonyms to canonical yes/no.
-// DOES trim for the purpose of deciding, but returns canonical without extra spaces.
-// If it can't decide, returns original untouched.
+// как у тебя: trim для принятия решения, но остальные ячейки не трогаем
 func normalizeFlagValue(v string) string {
 	trimmed := strings.TrimSpace(v)
 	if trimmed == "" {
-		return v // keep empty; we won't auto-create yes/no from "nothing"
+		return v
 	}
-
-	lc := strings.ToLower(trimmed)
-	switch lc {
+	switch strings.ToLower(trimmed) {
 	case "yes", "y", "true", "1":
 		return "yes"
 	case "no", "n", "false", "0":

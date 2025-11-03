@@ -2,6 +2,7 @@ package at_least_two_lines
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"strings"
 
@@ -29,13 +30,10 @@ func init() {
 // There is no auto-fix for this one.
 func runEnsureAtLeastTwoLines(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
-		Name:       checkName,
-		Validate:   validateAtLeastTwoLines,
-		PassMsg:    "file has at least two lines (header + data)",
-		FailAs:     checks.Fail,
-		FixedMsg:   "",
-		AppliedMsg: "",
-		Fix:        nil,
+		Name:     checkName,
+		Validate: validateAtLeastTwoLines,
+		PassMsg:  "file has at least two lines (header + data)",
+		FailAs:   checks.Fail,
 	})
 }
 
@@ -44,15 +42,15 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	data := strings.TrimSpace(string(a.Data))
-	if data == "" {
+	data := bytes.TrimSpace(a.Data)
+	if len(data) == 0 {
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "empty file: expected header and at least one data row",
 		}
 	}
 
-	sc := bufio.NewScanner(strings.NewReader(data))
+	sc := bufio.NewScanner(bytes.NewReader(data))
 	const maxLine = 16 << 20
 	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
 
@@ -67,7 +65,7 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 		}
 		lines++
 		if lines >= 2 {
-			return checks.ValidationResult{OK: true}
+			return checks.ValidationResult{OK: true, Msg: "has ≥2 lines"}
 		}
 	}
 

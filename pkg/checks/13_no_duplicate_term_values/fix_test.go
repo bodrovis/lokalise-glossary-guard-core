@@ -47,7 +47,6 @@ func TestFixDuplicateTermValues_NoHeader_NoFix(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	// just whitespace/newlines, so firstNonEmptyLineIndex() will return -1
 	csv := "\n \n\t\n"
 	a := checks.Artifact{
 		Data: []byte(csv),
@@ -117,16 +116,14 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 	// 1 header
 	// 2 Apple;red
 	// 3 Banana;yellow
-	// 4 "   " (blank row)
-	// 5 apple;green   (different from "Apple")
-	// 6 Apple;sweet   (dup of "Apple")
-	// 7 apple;bitter  (dup of "apple")
+	// 4 apple;green   (different from "Apple")
+	// 5 Apple;sweet   (dup of "Apple")
+	// 6 apple;bitter  (dup of "apple")
 
 	input := "" +
 		"term;description\n" +
 		"Apple;red\n" +
 		"Banana;yellow\n" +
-		"   \n" +
 		"apple;green\n" +
 		"Apple;sweet\n" +
 		"apple;bitter\n"
@@ -152,7 +149,6 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 		"term;description\n" +
 		"Apple;red\n" +
 		"Banana;yellow\n" +
-		"   \n" +
 		"apple;green\n"
 
 	a := checks.Artifact{
@@ -185,8 +181,8 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 		t.Fatalf("expected note to mention \"apple\" separately, got: %q", fr.Note)
 	}
 	// Apple dup row was original line 6, apple dup row was original line 7
-	if !strings.Contains(fr.Note, "6") || !strings.Contains(fr.Note, "7") {
-		t.Fatalf("expected note to list removed row numbers 6 and 7, got: %q", fr.Note)
+	if !strings.Contains(fr.Note, "5") || !strings.Contains(fr.Note, "6") {
+		t.Fatalf("expected note to list removed row numbers 5 and 6, got: %q", fr.Note)
 	}
 }
 

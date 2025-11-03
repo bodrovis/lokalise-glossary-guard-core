@@ -35,13 +35,13 @@ func TestValidateNoSpacesInHeader(t *testing.T) {
 			name:    "header with leading space fails",
 			data:    " term;description\nfoo;bar\n",
 			wantOK:  false,
-			wantMsg: "header has leading/trailing spaces in column names",
+			wantMsg: "header has leading/trailing spaces in column names at positions: 1",
 		},
 		{
 			name:    "header with trailing space fails",
 			data:    "term ;description\nfoo;bar\n",
 			wantOK:  false,
-			wantMsg: "header has leading/trailing spaces in column names",
+			wantMsg: "header has leading/trailing spaces in column names at positions: 1",
 		},
 		{
 			name:    "empty artifact -> cannot check",

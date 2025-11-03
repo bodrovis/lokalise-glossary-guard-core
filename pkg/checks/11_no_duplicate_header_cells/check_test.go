@@ -58,7 +58,7 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			name:    "only blank lines",
 			csv:     "\n \n\t\n",
 			wantOK:  true,
-			wantSub: "no header line found",
+			wantSub: "no content to check for duplicate headers",
 		},
 		{
 			name: "duplicate empty headers",

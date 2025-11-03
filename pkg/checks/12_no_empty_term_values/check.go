@@ -1,7 +1,10 @@
 package no_empty_term_values
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -36,123 +39,120 @@ func runNoEmptyTermValues(ctx context.Context, a checks.Artifact, opts checks.Ru
 
 func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
-		}
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	}
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: true, Msg: "no content to validate for empty term values"}
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no content to validate for empty term values",
+	// CSV reader c разделителем ';'
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	// читаем первую НЕПУСТУЮ запись как хедер
+	var header []string
+	recIdx := 0 // 1-based индекс записи для сообщений
+	for {
+		rec, err := r.Read()
+		if err != nil {
+			if ctx.Err() != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+			}
+			// нет записей — нечего валидировать
+			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to validate for empty term values)"}
 		}
-	}
-
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no header line found (nothing to validate for empty term values)",
+		recIdx++
+		nonEmpty := false
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				nonEmpty = true
+				break
+			}
 		}
-	}
-
-	headerLine := lines[headerIdx]
-	if strings.TrimSpace(headerLine) == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "empty header line (nothing to validate for empty term values)",
-		}
-	}
-
-	headerCells := splitCells(headerLine)
-
-	termCol := -1
-	for i, h := range headerCells {
-		lc := strings.ToLower(strings.TrimSpace(h))
-		if lc == "term" {
-			termCol = i
+		if nonEmpty {
+			header = rec
 			break
 		}
 	}
 
-	if termCol < 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no 'term' column found (skipping empty term validation)",
+	// ищем колонку "term" (case-insensitive)
+	termCol := -1
+	for i, h := range header {
+		if strings.ToLower(strings.TrimSpace(h)) == "term" {
+			termCol = i
+			break
 		}
 	}
+	if termCol < 0 {
+		return checks.ValidationResult{OK: true, Msg: "no 'term' column found (skipping empty term validation)"}
+	}
 
+	// проверяем остальные записи
 	var badRows []int
+	rowNum := recIdx // текущий 1-based номер записи (после чтения хедера)
+	const checkEvery = 1 << 12
+	for {
+		if (rowNum % checkEvery) == 0 {
+			if err := ctx.Err(); err != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+			}
+		}
 
-	for rowIdx := headerIdx + 1; rowIdx < len(lines); rowIdx++ {
-		rawRow := lines[rowIdx]
+		rec, err := r.Read()
+		if err != nil {
+			break // EOF или ошибка — другие чеки отрепортят парсинг
+		}
+		rowNum++
 
-		if strings.TrimSpace(rawRow) == "" {
+		// пропускаем полностью пустые строки
+		allEmpty := true
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				allEmpty = false
+				break
+			}
+		}
+		if allEmpty {
 			continue
 		}
 
-		cells := splitCells(rawRow)
-
 		val := ""
-		if termCol < len(cells) {
-			val = strings.TrimSpace(cells[termCol])
+		if termCol < len(rec) {
+			val = strings.TrimSpace(rec[termCol])
 		}
-
 		if val == "" {
-			badRows = append(badRows, rowIdx+1)
+			badRows = append(badRows, rowNum) // уже 1-based
 		}
 	}
 
 	if len(badRows) == 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "all rows have non-empty term",
-		}
+		return checks.ValidationResult{OK: true, Msg: "all rows have non-empty term"}
 	}
 
-	displayRows := badRows
-	if len(displayRows) > 10 {
-		displayRows = displayRows[:10]
-	}
-
-	msg := "empty term in rows: " + joinIntSlice(displayRows, ", ")
-	if len(badRows) > 10 {
-		msg += " ... (total " + strconv.Itoa(len(badRows)) + ")"
-	} else {
-		msg += " (total " + strconv.Itoa(len(badRows)) + ")"
-	}
-
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: msg,
-	}
-}
-
-func splitCells(s string) []string {
-	parts := strings.Split(s, ";")
-	for i := range parts {
-		parts[i] = strings.TrimSpace(parts[i])
-	}
-	return parts
-}
-
-func joinIntSlice(nums []int, sep string) string {
-	if len(nums) == 0 {
-		return ""
-	}
-	if len(nums) == 1 {
-		return strconv.Itoa(nums[0])
+	display := badRows
+	if len(display) > 10 {
+		display = display[:10]
 	}
 	var b strings.Builder
-	b.WriteString(strconv.Itoa(nums[0]))
-	for i := 1; i < len(nums); i++ {
-		b.WriteString(sep)
-		b.WriteString(" ")
-		b.WriteString(strconv.Itoa(nums[i]))
+	b.WriteString("empty term in rows: ")
+	for i, n := range display {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(strconv.Itoa(n))
 	}
-	return b.String()
+	if len(badRows) > 10 {
+		b.WriteString(" ... (total ")
+		b.WriteString(strconv.Itoa(len(badRows)))
+		b.WriteString(")")
+	} else {
+		b.WriteString(" (total ")
+		b.WriteString(strconv.Itoa(len(badRows)))
+		b.WriteString(")")
+	}
+
+	return checks.ValidationResult{OK: false, Msg: b.String()}
 }

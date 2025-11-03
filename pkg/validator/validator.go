@@ -33,7 +33,6 @@ type Summary struct {
 }
 
 // Validate runs all registered checks in sorted order and returns a summary.
-// It respects FailFast() and RunOptions (FixMode, RerunAfterFix, HardFailOnErr).
 func Validate(
 	ctx context.Context,
 	filePath string,

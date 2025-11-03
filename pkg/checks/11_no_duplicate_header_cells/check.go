@@ -1,7 +1,10 @@
 package duplicate_header_cells
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -40,58 +43,67 @@ func runWarnDuplicateHeaderCells(ctx context.Context, a checks.Artifact, opts ch
 
 func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
-		}
+		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	raw := string(a.Data)
-	if raw == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no content to check for duplicate headers",
-		}
+	if len(bytes.TrimSpace(a.Data)) == 0 {
+		return checks.ValidationResult{OK: true, Msg: "no content to check for duplicate headers"}
 	}
 
-	lines := strings.Split(raw, "\n")
-	headerIdx := checks.FirstNonEmptyLineIndex(lines)
-	if headerIdx < 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no header line found (nothing to check for duplicates)",
+	// читаем первую НЕПУСТУЮ запись как заголовок
+	br := bufio.NewReader(bytes.NewReader(a.Data))
+	r := csv.NewReader(br)
+	r.Comma = ';'
+	r.FieldsPerRecord = -1
+	r.LazyQuotes = true
+
+	var header []string
+	for {
+		rec, err := r.Read()
+		if err != nil || rec == nil {
+			if ctx.Err() != nil {
+				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+			}
+			// не смогли распарсить — пусть другие чеки рулят
+			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to check for duplicates)"}
+		}
+		nonEmpty := false
+		for _, c := range rec {
+			if strings.TrimSpace(c) != "" {
+				nonEmpty = true
+				break
+			}
+		}
+		if nonEmpty {
+			header = rec
+			break
 		}
 	}
-
-	headerLine := lines[headerIdx]
-	if strings.TrimSpace(headerLine) == "" {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "empty header line (nothing to check for duplicates)",
-		}
-	}
-
-	colsRaw := strings.Split(headerLine, ";")
 
 	type stat struct {
 		Count  int
 		Sample string
 	}
-
 	seen := make(map[string]*stat)
 
-	for _, c := range colsRaw {
+	for _, c := range header {
+		if err := ctx.Err(); err != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		}
 		trimmed := strings.TrimSpace(c)
-		lc := strings.ToLower(trimmed)
+		// ключом считаем тримнутую строку (включая пустую!)
+		key := strings.ToLower(trimmed)
 
-		if s, ok := seen[lc]; ok {
+		// красивое имя для репорта
+		sample := trimmed
+		if sample == "" {
+			sample = `"<empty>"`
+		}
+
+		if s, ok := seen[key]; ok {
 			s.Count++
 		} else {
-			seen[lc] = &stat{
-				Count:  1,
-				Sample: trimmed,
-			}
+			seen[key] = &stat{Count: 1, Sample: sample}
 		}
 	}
 
@@ -103,16 +115,7 @@ func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks
 	}
 
 	if len(dups) == 0 {
-		return checks.ValidationResult{
-			OK:  true,
-			Msg: "no duplicate header columns",
-		}
+		return checks.ValidationResult{OK: true, Msg: "no duplicate header columns"}
 	}
-
-	msg := "duplicate header columns: " + strings.Join(dups, ", ")
-
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: msg,
-	}
+	return checks.ValidationResult{OK: false, Msg: "duplicate header columns: " + strings.Join(dups, ", ")}
 }

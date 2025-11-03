@@ -44,8 +44,12 @@ func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.Validat
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
-	total, first10, err := findEmptyLines(a.Data)
+	total, first10, err := findEmptyLines(ctx, a.Data)
 	if err != nil {
+		// если отменили контекст во время сканирования — отдаём «cancelled», а не общую ошибку
+		if ctx.Err() != nil {
+			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+		}
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "failed to scan file for empty lines",
@@ -67,7 +71,7 @@ func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.Validat
 
 // findEmptyLines scans with bufio.Scanner (large buffer) and returns the total
 // number of empty (whitespace-only) lines and up to the first 10 line numbers.
-func findEmptyLines(b []byte) (int, []int, error) {
+func findEmptyLines(ctx context.Context, b []byte) (int, []int, error) {
 	sc := bufio.NewScanner(bytes.NewReader(b))
 
 	// allow long lines (16 MiB per line)
@@ -77,8 +81,14 @@ func findEmptyLines(b []byte) (int, []int, error) {
 	line, total := 0, 0
 	first := make([]int, 0, 10)
 
+	const every = 1 << 16 // 65536 lines
 	for sc.Scan() {
 		line++
+		if (line % every) == 0 {
+			if err := ctx.Err(); err != nil {
+				return 0, nil, err
+			}
+		}
 		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
 			total++
 			if len(first) < 10 {
@@ -97,7 +107,7 @@ func formatEmptyMsg(total int, first []int) string {
 	if total == 1 {
 		sb.WriteString("found 1 empty line")
 	} else {
-		sb.WriteString(fmt.Sprintf("found %d empty line(s)", total))
+		sb.WriteString(fmt.Sprintf("found %d empty lines", total))
 	}
 	if len(first) > 0 {
 		sb.WriteString(" at lines ")

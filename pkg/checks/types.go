@@ -102,7 +102,7 @@ type CheckAdapter struct {
 	run      CheckFunc // main entry the runner will call
 }
 
-// Option configures a CheckAdapter (priority, fail-fast, attach fix, etc.).
+// Option configures a CheckAdapter (priority, fail-fast, etc.).
 type Option func(*CheckAdapter)
 
 // ─────────────────────────────────────────────────────────────────────────────
