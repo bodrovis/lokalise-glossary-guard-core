@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
@@ -42,8 +41,15 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	data := bytes.TrimSpace(a.Data)
-	if len(data) == 0 {
+	data := a.Data
+
+	// Strip optional UTF-8 BOM; do not let it make the file look "non-empty".
+	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+		data = data[3:]
+	}
+
+	// If effectively empty (only whitespace/zero-width), fail early.
+	if checks.IsBlankUnicode(data) {
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "empty file: expected header and at least one data row",
@@ -51,7 +57,7 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 	}
 
 	sc := bufio.NewScanner(bytes.NewReader(data))
-	const maxLine = 16 << 20
+	const maxLine = 16 << 20 // 16 MiB per line
 	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
 
 	lines := 0
@@ -59,16 +65,23 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 		if err := ctx.Err(); err != nil {
 			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 		}
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
+		chunk := sc.Bytes() // split by '\n'; a trailing '\r' may be present
+
+		// Normalize CRLF by stripping trailing '\r' from the chunk.
+		if n := len(chunk); n > 0 && chunk[n-1] == '\r' {
+			chunk = chunk[:n-1]
+		}
+
+		// Skip blank-looking lines (Unicode whitespace + zero-widths).
+		if checks.IsBlankUnicode(chunk) {
 			continue
 		}
+
 		lines++
 		if lines >= 2 {
 			return checks.ValidationResult{OK: true, Msg: "has ≥2 lines"}
 		}
 	}
-
 	if err := sc.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "failed to read file", Err: err}
 	}

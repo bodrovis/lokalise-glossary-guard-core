@@ -36,7 +36,7 @@ type RunOptions struct {
 // CheckResult is a single validation outcome (no fix application info here).
 type CheckResult struct {
 	Name    string // check name that produced this result
-	Status  Status // PASS, WARN, FAIL or ERROR
+	Status  Status
 	Message string // human-readable description or diagnostic info
 }
 
@@ -114,7 +114,6 @@ type CheckUnit interface {
 	Name() string
 
 	// Run performs validation and may apply a fix internally based on RunOptions.
-	// It MUST always return the output Data/Path to propagate (even if unchanged).
 	Run(ctx context.Context, a Artifact, opts RunOptions) CheckOutcome
 
 	// FailFast marks this check as critical — if it fails, the runner may stop further validation.
@@ -136,8 +135,7 @@ type noFixError struct{}
 func (e *noFixError) Error() string { return "no fix implemented for this check" }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// RunRecipe: declarative "validate → maybe fix → maybe revalidate" contract
-// (execution logic lives in run_recipe.go, not here)
+// RunRecipe: declarative "validate - maybe fix - maybe revalidate" contract
 // ─────────────────────────────────────────────────────────────────────────────
 
 type RunRecipe struct {

@@ -45,23 +45,21 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 		return checks.ValidationResult{OK: true, Msg: "no content to validate for empty term values"}
 	}
 
-	// CSV reader c разделителем ';'
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
 
-	// читаем первую НЕПУСТУЮ запись как хедер
 	var header []string
-	recIdx := 0 // 1-based индекс записи для сообщений
+	recIdx := 0
 	for {
 		rec, err := r.Read()
 		if err != nil {
 			if ctx.Err() != nil {
 				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
 			}
-			// нет записей — нечего валидировать
+
 			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to validate for empty term values)"}
 		}
 		recIdx++
@@ -78,7 +76,6 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 		}
 	}
 
-	// ищем колонку "term" (case-insensitive)
 	termCol := -1
 	for i, h := range header {
 		if strings.ToLower(strings.TrimSpace(h)) == "term" {
@@ -90,9 +87,8 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 		return checks.ValidationResult{OK: true, Msg: "no 'term' column found (skipping empty term validation)"}
 	}
 
-	// проверяем остальные записи
 	var badRows []int
-	rowNum := recIdx // текущий 1-based номер записи (после чтения хедера)
+	rowNum := recIdx
 	const checkEvery = 1 << 12
 	for {
 		if (rowNum % checkEvery) == 0 {
@@ -103,11 +99,10 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 
 		rec, err := r.Read()
 		if err != nil {
-			break // EOF или ошибка — другие чеки отрепортят парсинг
+			break
 		}
 		rowNum++
 
-		// пропускаем полностью пустые строки
 		allEmpty := true
 		for _, c := range rec {
 			if strings.TrimSpace(c) != "" {
@@ -124,7 +119,7 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 			val = strings.TrimSpace(rec[termCol])
 		}
 		if val == "" {
-			badRows = append(badRows, rowNum) // уже 1-based
+			badRows = append(badRows, rowNum)
 		}
 	}
 

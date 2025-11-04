@@ -27,7 +27,6 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 	lineSep := checks.DetectLineEnding(in) // "\r\n" | "\n"
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
-	// Найти старт первой непустой строки (хедер); всё до неё — как есть
 	headerStart := 0
 	found := false
 	pos := 0
@@ -62,9 +61,8 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 	}
 
 	before := in[:headerStart]
-	after := in[headerStart:] // начинается с хедера
+	after := in[headerStart:]
 
-	// Парсим CSV с ';'
 	r := csv.NewReader(bytes.NewReader(after))
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
@@ -78,13 +76,11 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 		return checks.NoFix(a, "cannot parse CSV with semicolon delimiter")
 	}
 
-	// Хедер — первая запись тут
 	header := records[0]
 	if !checks.AnyNonEmpty(header) {
 		return checks.NoFix(a, "empty header line")
 	}
 
-	// Индексы наблюдаемых колонок
 	colPos := make(map[string]int, len(watchedCols))
 	for _, w := range watchedCols {
 		colPos[w] = -1
@@ -109,16 +105,13 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 	changed := false
 	outRecs := make([][]string, len(records))
 
-	// Копируем хедер как есть
 	outRecs[0] = records[0]
 
-	// Остальные строки — нормализуем только флаговые колонки
 	for i := 1; i < len(records); i++ {
 		if err := ctx.Err(); err != nil {
 			return checks.FixResult{}, err
 		}
 		row := records[i]
-		// пустые строки сохраняем как пустую запись (запишем blank line)
 		if !checks.AnyNonEmpty(row) {
 			outRecs[i] = nil
 			continue
@@ -145,7 +138,6 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 		return checks.NoFix(a, "no flag values to normalize")
 	}
 
-	// Сериализуем назад
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	w.Comma = ';'
@@ -154,7 +146,6 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 			return checks.FixResult{}, err
 		}
 		if rec == nil {
-			// чистая пустая строка
 			if _, err := buf.WriteString(lineSep); err != nil {
 				return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to write blank line"}, err
 			}
@@ -190,7 +181,6 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 	}, nil
 }
 
-// как у тебя: trim для принятия решения, но остальные ячейки не трогаем
 func normalizeFlagValue(v string) string {
 	trimmed := strings.TrimSpace(v)
 	if trimmed == "" {

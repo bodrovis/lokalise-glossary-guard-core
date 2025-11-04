@@ -48,7 +48,6 @@ func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) check
 		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
 	}
 
-	// читаем первую непустую CSV-запись как заголовок
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
@@ -64,7 +63,7 @@ func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) check
 			}
 			return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
 		}
-		// проверяем «непустую» запись
+
 		nonEmpty := false
 		for _, c := range rec {
 			if strings.TrimSpace(c) != "" {

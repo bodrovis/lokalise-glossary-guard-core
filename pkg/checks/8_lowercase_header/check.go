@@ -13,15 +13,6 @@ import (
 
 const checkName = "ensure-lowercase-header"
 
-var requiredLowercaseCols = map[string]struct{}{
-	"term":          {},
-	"description":   {},
-	"casesensitive": {},
-	"translatable":  {},
-	"forbidden":     {},
-	"tags":          {},
-}
-
 func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
@@ -37,7 +28,6 @@ func init() {
 	}
 }
 
-// policy: FailAs WARN, StatusAfterFixed PASS — оставляем как есть
 func runEnsureLowercaseHeader(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -84,7 +74,7 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 			continue
 		}
 		lc := strings.ToLower(trimmed)
-		if _, want := requiredLowercaseCols[lc]; !want {
+		if _, want := checks.KnownHeaders[lc]; !want {
 			continue
 		}
 		if trimmed != lc {

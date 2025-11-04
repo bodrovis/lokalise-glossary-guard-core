@@ -17,7 +17,6 @@ func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
 		runWarnOrphanLocaleDescriptions,
-		// not fail-fast, this is advisory
 		checks.WithPriority(14),
 	)
 	if err != nil {
@@ -28,7 +27,6 @@ func init() {
 	}
 }
 
-// runWarnOrphanLocaleDescriptions: validation + safe autofix.
 func runWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -55,7 +53,6 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 		return checks.ValidationResult{OK: true, Msg: "no content to validate for orphan locale descriptions"}
 	}
 
-	// читаем первую НЕПУСТУЮ CSV-запись как хедер
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
@@ -84,7 +81,6 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 		}
 	}
 
-	// соберём все колонки (lc) и кандидатов вида *_description (base в lc)
 	allColsLC := make(map[string]struct{})
 	orphanCandidates := make(map[string]struct{})
 
@@ -116,7 +112,6 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 		return checks.ValidationResult{OK: true, Msg: "no orphan *_description columns"}
 	}
 
-	// сообщение (до 10 штук)
 	display := orphans
 	if len(display) > 10 {
 		display = display[:10]

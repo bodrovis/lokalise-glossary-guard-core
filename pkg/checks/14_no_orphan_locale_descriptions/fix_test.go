@@ -8,12 +8,6 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-func asStr(b []byte) string { return string(b) }
-
-// --------------------
-// Unit tests: fixOrphanLocaleDescriptions
-// --------------------
-
 func TestFixOrphanLocaleDescriptions_NoContent_NoFix(t *testing.T) {
 	t.Parallel()
 
@@ -71,7 +65,6 @@ func TestFixOrphanLocaleDescriptions_NoOrphans_NoFix(t *testing.T) {
 
 	ctx := context.Background()
 
-	// en + en_description (ok), fr + fr_description (ok)
 	input := "" +
 		"term;description;en;en_description;fr;fr_description\n" +
 		"hello;desc;hello en;en expl;salut;fr expl\n"
@@ -106,9 +99,6 @@ func TestFixOrphanLocaleDescriptions_SingleOrphan_InsertsColumnBeforeDescription
 
 	// "en_description" exists, but "en" does not.
 	// "fr" and "fr_description" are fine.
-	//
-	// also add a blank row in middle to make sure we preserve it.
-	//
 	// line 0: header
 	// line 1: data row 1
 	// line 2: "   " (blank) -> keep verbatim
@@ -118,17 +108,6 @@ func TestFixOrphanLocaleDescriptions_SingleOrphan_InsertsColumnBeforeDescription
 		"hello;desc;en expl;salut;fr expl\n" +
 		"world;desc2;en expl2;bonjour;fr expl2\n"
 
-	// после фикса должно стать:
-	// header:
-	//   term;description;en;en_description;fr;fr_description
-	//
-	// row1:
-	//   hello;desc;;en expl;salut;fr expl
-	//
-	// blank row stays the same ("   ")
-	//
-	// row2:
-	//   world;desc2;;en expl2;bonjour;fr expl2
 	want := "" +
 		"term;description;en;en_description;fr;fr_description\n" +
 		"hello;desc;;en expl;salut;fr expl\n" +
@@ -202,7 +181,6 @@ func TestFixOrphanLocaleDescriptions_MultipleOrphans_DifferentLocales(t *testing
 		t.Fatalf("fixed data mismatch for multiple orphans.\n got:\n%q\nwant:\n%q", got, want)
 	}
 
-	// note should mention both en and de-de, but not duplicate them
 	if fr.Note == "" {
 		t.Fatalf("expected note to list inserted locales")
 	}
@@ -212,7 +190,6 @@ func TestFixOrphanLocaleDescriptions_MultipleOrphans_DifferentLocales(t *testing
 	if !strings.Contains(fr.Note, "de-de") {
 		t.Fatalf("expected note to mention de-de, got %q", fr.Note)
 	}
-	// shouldn't mention fr, because fr already existed
 	if strings.Contains(fr.Note, "fr") {
 		t.Fatalf("did not expect note to mention fr, got %q", fr.Note)
 	}
@@ -223,8 +200,6 @@ func TestFixOrphanLocaleDescriptions_AlreadyHasBase_DoNotInsertAgain(t *testing.
 
 	ctx := context.Background()
 
-	// here "fr" already exists BEFORE "fr_description", so we shouldn't insert "fr" again.
-	// but "en_description" is orphan, so we *do* insert "en".
 	input := "" +
 		"term;description;fr;fr_description;en_description\n" +
 		"t1;d1;salut;fr1;en1\n" +
@@ -253,7 +228,6 @@ func TestFixOrphanLocaleDescriptions_AlreadyHasBase_DoNotInsertAgain(t *testing.
 		t.Fatalf("fixed data mismatch when some bases already exist.\n got:\n%q\nwant:\n%q", got, want)
 	}
 
-	// note should include "en", should not include "fr"
 	if !strings.Contains(fr.Note, "en") {
 		t.Fatalf("expected note to mention 'en', got %q", fr.Note)
 	}
@@ -281,7 +255,6 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_NoFixPolicy(t *testing.T) {
 	}
 
 	out := runWarnOrphanLocaleDescriptions(ctx, a, checks.RunOptions{
-		// default FixMode == FixNone: don't attempt fix
 		RerunAfterFix: true,
 	})
 
@@ -290,7 +263,6 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_NoFixPolicy(t *testing.T) {
 			out.Result.Status, out.Result.Message)
 	}
 
-	// no fix attempted → Final should match original
 	if out.Final.DidChange {
 		t.Fatalf("expected DidChange=false when fix not attempted")
 	}
@@ -320,7 +292,6 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WithFixPolicy(t *testing.T) {
 		"hello;desc;en expl;salut;fr expl\n" +
 		"world;desc2;en expl2;bonjour;fr expl2\n"
 
-	// after fix we expect "en" injected before "en_description"
 	wantAfterFix := "" +
 		"term;description;en;en_description;fr;fr_description\n" +
 		"hello;desc;;en expl;salut;fr expl\n" +
@@ -332,13 +303,10 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WithFixPolicy(t *testing.T) {
 	}
 
 	out := runWarnOrphanLocaleDescriptions(ctx, a, checks.RunOptions{
-		FixMode:       checks.FixAlways, // allow auto-fix even though it's WARN-level
+		FixMode:       checks.FixAlways,
 		RerunAfterFix: true,
 	})
 
-	// after fix+revalidate:
-	// - now there are no orphans
-	// - StatusAfterFixed is PASS
 	if out.Result.Status != checks.Pass {
 		t.Fatalf("expected PASS after auto-fix, got %s (%s)",
 			out.Result.Status, out.Result.Message)
@@ -353,15 +321,15 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WithFixPolicy(t *testing.T) {
 		t.Fatalf("fixed data mismatch after run.\n got:\n%q\nwant:\n%q", gotData, wantAfterFix)
 	}
 
-	// path shouldn't get randomly rewritten
 	if out.Final.Path != "" && out.Final.Path != a.Path {
 		t.Fatalf("unexpected path rewrite: got %q want %q or empty", out.Final.Path, a.Path)
 	}
 
-	// message after successful fix should mention "added missing locale columns" or generally be a fixed/pass message
 	if !strings.Contains(out.Result.Message, "added missing locale columns") &&
 		!strings.Contains(out.Result.Message, "auto-fix") &&
 		!strings.Contains(out.Result.Message, "fixed") {
 		t.Fatalf("expected Result.Message to acknowledge fix, got %q", out.Result.Message)
 	}
 }
+
+func asStr(b []byte) string { return string(b) }

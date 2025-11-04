@@ -126,7 +126,7 @@ func fixAllowedColumnsHeader(ctx context.Context, a checks.Artifact) (checks.Fix
 	for j, name := range header {
 		n := norm(name)
 		// core allowed?
-		if _, ok := coreAllowed[n]; ok {
+		if _, ok := checks.KnownHeaders[n]; ok {
 			keep = append(keep, colInfo{label: name, idx: j})
 			continue
 		}

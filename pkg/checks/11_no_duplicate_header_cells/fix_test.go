@@ -8,7 +8,6 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-// Unit tests for fixDuplicateHeaderCells itself
 func TestFixDuplicateHeaderCells_NoDuplicates_NoFix(t *testing.T) {
 	t.Parallel()
 
@@ -50,27 +49,10 @@ func TestFixDuplicateHeaderCells_RemovesSecondAndLaterDuplicates(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Header has TERM twice (case-insensitive duplicate) and "fr" twice.
-	// Data rows align with that.
 	input := "" +
 		"term;description;TERM;fr;fr;notes\n" +
 		"t1;d1;t1dup;fr1;fr1dup;n1\n" +
 		"t2;d2;t2dup;fr2;fr2dup;n2\n"
-
-	// expected:
-	// - keep first "term"   (col0)
-	// - keep "description"  (col1)
-	// - drop second "TERM"  (col2)
-	// - keep first "fr"     (col3)
-	// - drop second "fr"    (col4)
-	// - keep "notes"        (col5)
-	//
-	// so projected cols are [0,1,3,5]
-	//
-	// resulting rows:
-	// header: "term;description;fr;notes"
-	// row1:   "t1;d1;fr1;n1"
-	// row2:   "t2;d2;fr2;n2"
 
 	want := "" +
 		"term;description;fr;notes\n" +
@@ -104,21 +86,16 @@ func TestFixDuplicateHeaderCells_RemovesSecondAndLaterDuplicates(t *testing.T) {
 	}
 }
 
-// also check that unique columns that are NOT duplicates survive untouched
 func TestFixDuplicateHeaderCells_PreservesUniqueColumnsAndOrder(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 
-	// Here "description" is unique, "context" unique, "meta" unique.
-	// Only "term" is duplicated twice.
 	input := "" +
 		"term;description;context;term;meta\n" +
 		"apple;fruit;a1;dupA;infoA\n" +
 		"pear;fruit;a2;dupB;infoB\n"
 
-	// keep first term (col0), description (1), context (2), drop second term (3), keep meta (4)
-	// result cols idx: [0,1,2,4]
 	want := "" +
 		"term;description;context;meta\n" +
 		"apple;fruit;a1;infoA\n" +
@@ -149,7 +126,6 @@ func TestRunWarnDuplicateHeaderCells_EndToEnd_NoAutoFix(t *testing.T) {
 
 	ctx := context.Background()
 
-	// header has duplicates: "term" and "fr" повторяются
 	input := "" +
 		"term;description;term;fr;fr\n" +
 		"x;y;x2;frA;frB\n"
@@ -160,10 +136,6 @@ func TestRunWarnDuplicateHeaderCells_EndToEnd_NoAutoFix(t *testing.T) {
 	}
 
 	out := runWarnDuplicateHeaderCells(ctx, a, checks.RunOptions{
-		// important:
-		// we DO NOT allow auto-fix here.
-		// FixMode default zero value is FixNone (0) if you don't set it,
-		// but to be explicit we'll leave FixMode as FixNone.
 		RerunAfterFix: true,
 	})
 
@@ -171,7 +143,6 @@ func TestRunWarnDuplicateHeaderCells_EndToEnd_NoAutoFix(t *testing.T) {
 		t.Fatalf("expected WARN, got %s (%s)", out.Result.Status, out.Result.Message)
 	}
 
-	// because fix was not attempted (FixNone), Final should match original
 	if out.Final.DidChange {
 		t.Fatalf("expected DidChange=false (no auto-fix attempted)")
 	}
@@ -185,13 +156,11 @@ func TestRunWarnDuplicateHeaderCells_EndToEnd_NoAutoFix(t *testing.T) {
 		t.Fatalf("artifact path must remain unchanged; got %q want %q", out.Final.Path, a.Path)
 	}
 
-	// sanity: message should mention duplicates
 	if !strings.Contains(out.Result.Message, "duplicate") {
 		t.Fatalf("expected message to mention duplicates, got %q", out.Result.Message)
 	}
 }
 
-// helper to compare bytes -> string without noise
 func asStr(b []byte) string {
 	return string(b)
 }

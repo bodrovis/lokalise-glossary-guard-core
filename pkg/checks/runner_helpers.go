@@ -1,6 +1,7 @@
 package checks
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -39,7 +40,7 @@ func RunWithFix(ctx context.Context, a Artifact, opts RunOptions, r RunRecipe) C
 	}
 
 	// 2) policy: attempt fix?
-	if r.Fix == nil || !ShouldAttemptFix(opts, Fail) {
+	if r.Fix == nil || !shouldAttemptFix(opts, Fail) {
 		msg := nz(res.Msg, "validation failed")
 		if failAs == Error {
 			return OutcomeKeep(Error, r.Name, msg, a, "")
@@ -60,7 +61,7 @@ func RunWithFix(ctx context.Context, a Artifact, opts RunOptions, r RunRecipe) C
 	}
 
 	// 4) propagate new state
-	outData, outPath, changed := PropagateAfterFix(a, fr)
+	outData, outPath, changed := propagateAfterFix(a, fr)
 	final := FixResult{Data: outData, Path: outPath, DidChange: changed, Note: fr.Note}
 
 	// 5) maybe revalidate (respect context again)
@@ -138,6 +139,39 @@ func safeValidate(name string, v ValidateFunc, ctx context.Context, a Artifact) 
 		}
 	}()
 	return v(ctx, a)
+}
+
+// propagateAfterFix merges FixResult into the input artifact to produce new state.
+// Zero-copy: we reuse input slices/strings unless the fix actually changed them.
+func propagateAfterFix(in Artifact, fr FixResult) (outData []byte, outPath string, didChange bool) {
+	outData, outPath = in.Data, in.Path
+
+	if fr.Data != nil && !bytes.Equal(fr.Data, in.Data) {
+		outData = fr.Data
+		didChange = true
+	}
+	if fr.Path != "" && fr.Path != in.Path {
+		outPath = fr.Path
+		didChange = true
+	}
+	if fr.DidChange {
+		didChange = true
+	}
+	return outData, outPath, didChange
+}
+
+// shouldAttemptFix returns true if the runner policy says we may fix for a given status.
+func shouldAttemptFix(opts RunOptions, st Status) bool {
+	switch opts.FixMode {
+	case FixAlways:
+		return true
+	case FixIfNotPass:
+		return st != Pass
+	case FixIfFailed:
+		return st == Fail || st == Error
+	default:
+		return false
+	}
 }
 
 // tiny helpers

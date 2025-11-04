@@ -14,19 +14,21 @@ func fixToSemicolonsIfConsistent(ctx context.Context, a checks.Artifact) (checks
 	}
 
 	in := a.Data
-	// strip optional UTF-8 BOM
+
+	// Strip optional UTF-8 BOM, but remember to restore it if we actually convert.
 	bom := []byte{}
 	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
 		bom = []byte{0xEF, 0xBB, 0xBF}
 		in = in[3:]
 	}
-	if len(bytes.TrimSpace(in)) == 0 {
+
+	// Treat files with only whitespace/zero-width as having no usable content.
+	if checks.IsBlankUnicode(in) {
 		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "no usable content to convert"}, checks.ErrNoFix
 	}
 
 	// detect line ending to preserve
 	sep := checks.DetectLineEnding(in)
-
 	dataStr := string(in)
 
 	if ok, _ := attemptRectParse(dataStr, ';'); ok {

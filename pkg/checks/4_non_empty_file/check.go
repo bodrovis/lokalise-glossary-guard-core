@@ -41,7 +41,8 @@ func validateNotEmpty(ctx context.Context, a checks.Artifact) checks.ValidationR
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	if len(bytes.TrimSpace(a.Data)) == 0 {
+	data := bytes.TrimSpace(a.Data)
+	if checks.IsBlankUnicode(data) {
 		return checks.ValidationResult{OK: false, Msg: "empty file: no data"}
 	}
 	return checks.ValidationResult{OK: true, Msg: "non-empty"}

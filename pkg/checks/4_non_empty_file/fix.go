@@ -17,23 +17,36 @@ var baseHeaderFields = []string{
 	"tags",
 }
 
+// fixAddHeaderIfEmpty inserts a minimal CSV header when the file is effectively empty.
+// "Empty" means the content contains only whitespace and/or zero-width/invisible runes.
+// It does not append a trailing line ending. If the file already has content, it is left unchanged.
 func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
 
 	data := a.Data
-	// strip optional UTF-8 BOM
+
+	// Optionally strip UTF-8 BOM at the start; we don't keep it in the output header.
 	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
 		data = data[3:]
 	}
-	if len(bytes.TrimSpace(data)) != 0 {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "file already has data; no header inserted"}, nil
+
+	// Consider the file empty if it contains only whitespace/zero-width.
+	if !checks.IsBlankUnicode(bytes.TrimSpace(data)) && !checks.IsBlankUnicode(data) {
+		return checks.FixResult{
+			Data:      a.Data,
+			Path:      "",
+			DidChange: false,
+			Note:      "file already has data; no header inserted",
+		}, nil
 	}
 
+	// Build header: base fields + per-language fields (lowercased, deduped).
 	seen := make(map[string]struct{}, len(a.Langs))
 	fields := make([]string, 0, len(baseHeaderFields)+len(a.Langs)*2)
 	fields = append(fields, baseHeaderFields...)
+
 	for _, lang := range a.Langs {
 		lc := strings.ToLower(strings.TrimSpace(lang))
 		if lc == "" {
@@ -46,11 +59,11 @@ func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResu
 		fields = append(fields, lc, lc+"_description")
 	}
 
+	// Use ';' as a delimiter to match downstream parsing.
 	header := strings.Join(fields, ";")
-	newData := []byte(header)
 
 	return checks.FixResult{
-		Data:      newData,
+		Data:      []byte(header), // no trailing newline by design
 		Path:      "",
 		DidChange: true,
 		Note:      "inserted CSV header",

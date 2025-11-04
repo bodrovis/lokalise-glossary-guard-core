@@ -30,7 +30,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 	lineSep := checks.DetectLineEnding(in) // "\r\n" | "\n"
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
-	// найти старт первой непустой строки (хедер); всё до неё — как есть
 	headerStart := 0
 	found := false
 	for pos := 0; pos <= len(in); {
@@ -64,12 +63,10 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 	}
 
 	before := in[:headerStart]
-	after := in[headerStart:] // с хедера
+	after := in[headerStart:]
 
-	// номер строки у хедера (1-based) — для Note
 	headerLineNo := 1 + bytes.Count(before, []byte("\n"))
 
-	// парсим CSV с ';'
 	r := csv.NewReader(bytes.NewReader(after))
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
@@ -83,7 +80,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 		return checks.NoFix(a, "cannot parse CSV with semicolon delimiter")
 	}
 
-	// первая непустая запись — header
 	hIdx := -1
 	for i, rec := range records {
 		if checks.AnyNonEmpty(rec) {
@@ -95,7 +91,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 		return checks.NoFix(a, "no header with 'term' column found")
 	}
 
-	// индекс колонки term
 	termCol := -1
 	for j, h := range records[hIdx] {
 		if strings.EqualFold(strings.TrimSpace(h), "term") {
@@ -111,7 +106,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 	type removedInfo struct{ rows []int }
 	removed := map[string]*removedInfo{}
 
-	// собираем результат: хедер + недубли
 	outRecs := make([][]string, 0, len(records))
 	outRecs = append(outRecs, records[hIdx])
 
@@ -121,7 +115,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 		}
 		rec := records[i]
 
-		// значение term; сравнение — case-sensitive, TrimSpace по краям
 		val := ""
 		if termCol < len(rec) {
 			val = strings.TrimSpace(rec[termCol])
@@ -136,7 +129,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 			continue
 		}
 
-		// дубль — запоминаем строки, не добавляем
 		info := removed[val]
 		if info == nil {
 			info = &removedInfo{}
@@ -149,7 +141,6 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 		return checks.NoFix(a, "no duplicate term rows to remove")
 	}
 
-	// сериализация обратно (только csv.Writer, без спец-кейсов)
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	w.Comma = ';'
@@ -164,23 +155,19 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to flush CSV: " + err.Error()}, err
 	}
 
-	outTail := buf.Bytes() // с '\n'
-	// привести к исходному lineSep
+	outTail := buf.Bytes()
 	if lineSep == "\r\n" {
 		outTail = bytes.ReplaceAll(outTail, []byte("\n"), []byte("\r\n"))
 	}
-	// сохранить отсутствие финального NL, если изначально не было
 	if !keepFinal && bytes.HasSuffix(outTail, []byte(lineSep)) {
 		outTail = outTail[:len(outTail)-len(lineSep)]
 	}
 
-	// склеить пролог + тело, вернуть BOM
 	out := make([]byte, 0, len(bom)+len(before)+len(outTail))
 	out = append(out, bom...)
 	out = append(out, before...)
 	out = append(out, outTail...)
 
-	// Note
 	var nb strings.Builder
 	nb.WriteString("removed duplicate term rows for: ")
 	first := true

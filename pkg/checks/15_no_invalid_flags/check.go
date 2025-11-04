@@ -24,8 +24,8 @@ func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
 		runNoInvalidFlags,
-		checks.WithFailFast(),   // hard fail if bad values appear
-		checks.WithPriority(15), // runs after all structural cleanup
+		checks.WithFailFast(),
+		checks.WithPriority(15),
 	)
 	if err != nil {
 		panic(checkName + ": " + err.Error())
@@ -44,14 +44,12 @@ func runNoInvalidFlags(ctx context.Context, a checks.Artifact, opts checks.RunOp
 		FixedMsg:         "normalized flag columns to yes/no",
 		AppliedMsg:       "auto-fix applied: normalized flag columns to yes/no",
 		StatusAfterFixed: checks.Pass,
-		// FailAs defaults to FAIL (hard fail)
-		StillBadMsg: "invalid flag values remain after fix",
+		StillBadMsg:      "invalid flag values remain after fix",
 	})
 }
 
 // validateNoInvalidFlags checks that all watchedCols (if present in header)
 // only contain "yes" or "no" (case-sensitive) and not empty.
-
 func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
@@ -60,16 +58,14 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 		return checks.ValidationResult{OK: true, Msg: "no content to validate for flags"}
 	}
 
-	// CSV reader с разделителем ';'
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
 
-	// читаем первую НЕПУСТУЮ запись как хедер
 	var header []string
-	recIdx := 0 // 1-based индекс записи
+	recIdx := 0
 	for {
 		rec, err := r.Read()
 		if err != nil {
@@ -92,7 +88,6 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 		}
 	}
 
-	// map watchedCol (lc) -> index в хедере, -1 если нет
 	colPos := make(map[string]int, len(watchedCols))
 	for _, w := range watchedCols {
 		colPos[strings.ToLower(w)] = -1
@@ -107,7 +102,7 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 	type bad struct {
 		colName string
 		val     string
-		rowNum  int // 1-based CSV-строка
+		rowNum  int
 	}
 	var invalids []bad
 
@@ -121,11 +116,10 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 		}
 		rec, err := r.Read()
 		if err != nil {
-			break // EOF/ошибка парса — другие чеки отрапортят
+			break
 		}
 		rowNum++
 
-		// пропускаем полностью пустые строки
 		allEmpty := true
 		for _, c := range rec {
 			if strings.TrimSpace(c) != "" {
@@ -140,13 +134,13 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 		for _, w := range watchedCols {
 			pos := colPos[strings.ToLower(w)]
 			if pos < 0 {
-				continue // такой колонки нет — ок
+				continue
 			}
 			val := ""
 			if pos < len(rec) {
 				val = strings.TrimSpace(rec[pos])
 			}
-			// строго только "yes" или "no"
+
 			if val != "yes" && val != "no" {
 				invalids = append(invalids, bad{colName: w, val: val, rowNum: rowNum})
 			}

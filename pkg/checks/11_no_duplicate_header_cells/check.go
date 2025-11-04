@@ -50,7 +50,6 @@ func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks
 		return checks.ValidationResult{OK: true, Msg: "no content to check for duplicate headers"}
 	}
 
-	// читаем первую НЕПУСТУЮ запись как заголовок
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
@@ -64,7 +63,6 @@ func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks
 			if ctx.Err() != nil {
 				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
 			}
-			// не смогли распарсить — пусть другие чеки рулят
 			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to check for duplicates)"}
 		}
 		nonEmpty := false
@@ -91,10 +89,9 @@ func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks
 			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 		}
 		trimmed := strings.TrimSpace(c)
-		// ключом считаем тримнутую строку (включая пустую!)
+
 		key := strings.ToLower(trimmed)
 
-		// красивое имя для репорта
 		sample := trimmed
 		if sample == "" {
 			sample = `"<empty>"`

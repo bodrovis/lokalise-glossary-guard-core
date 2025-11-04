@@ -1,11 +1,12 @@
 package checks
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"runtime/debug"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -88,42 +89,18 @@ func WithPriority(p int) Option {
 	return func(c *CheckAdapter) { c.priority = p }
 }
 
+var KnownHeaders = map[string]struct{}{
+	"term":          {},
+	"description":   {},
+	"casesensitive": {},
+	"translatable":  {},
+	"forbidden":     {},
+	"tags":          {},
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Policy & data propagation helpers
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ShouldAttemptFix returns true if the runner policy says we may fix for a given status.
-func ShouldAttemptFix(opts RunOptions, st Status) bool {
-	switch opts.FixMode {
-	case FixAlways:
-		return true
-	case FixIfNotPass:
-		return st != Pass
-	case FixIfFailed:
-		return st == Fail || st == Error
-	default:
-		return false
-	}
-}
-
-// PropagateAfterFix merges FixResult into the input artifact to produce new state.
-// Zero-copy: we reuse input slices/strings unless the fix actually changed them.
-func PropagateAfterFix(in Artifact, fr FixResult) (outData []byte, outPath string, didChange bool) {
-	outData, outPath = in.Data, in.Path
-
-	if fr.Data != nil && !bytes.Equal(fr.Data, in.Data) {
-		outData = fr.Data
-		didChange = true
-	}
-	if fr.Path != "" && fr.Path != in.Path {
-		outPath = fr.Path
-		didChange = true
-	}
-	if fr.DidChange {
-		didChange = true
-	}
-	return outData, outPath, didChange
-}
 
 // OutcomeWithFinal — generic builder when you already have the final state.
 func OutcomeWithFinal(st Status, name, msg string, final FixResult) CheckOutcome {
@@ -166,4 +143,41 @@ func AnyNonEmpty(rec []string) bool {
 		}
 	}
 	return false
+}
+
+// isBlankUnicode reports whether the line consists only of Unicode whitespace
+// plus additional zero-width/invisible code points that are commonly present
+// in "blank-looking" lines (ZWSP, ZWNJ, ZWJ, WORD JOINER, BOM, etc.).
+func IsBlankUnicode(b []byte) bool {
+	// Extra invisibles not covered by unicode.IsSpace.
+	switch {
+	// Fast-path: empty slice
+	case len(b) == 0:
+		return true
+	}
+	extra := func(r rune) bool {
+		switch r {
+		case '\u200B', // ZERO WIDTH SPACE
+			'\u200C', // ZERO WIDTH NON-JOINER
+			'\u200D', // ZERO WIDTH JOINER
+			'\u2060', // WORD JOINER
+			'\ufeff', // BOM
+			'\u180E': // MONGOLIAN VOWEL SEPARATOR (deprecated but still seen)
+			return true
+		}
+		return false
+	}
+
+	for i := 0; i < len(b); {
+		r, size := utf8.DecodeRune(b[i:])
+		if r == utf8.RuneError && size == 1 {
+			// Treat undecodable byte as non-blank.
+			return false
+		}
+		if !unicode.IsSpace(r) && !extra(r) {
+			return false
+		}
+		i += size
+	}
+	return true
 }

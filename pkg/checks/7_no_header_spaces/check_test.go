@@ -72,7 +72,7 @@ func TestValidateNoSpacesInHeader(t *testing.T) {
 			if tt.cancelCtx {
 				var cancel context.CancelFunc
 				ctx, cancel = context.WithCancel(ctx)
-				cancel() // cancel immediately
+				cancel()
 			}
 
 			artifact := checks.Artifact{

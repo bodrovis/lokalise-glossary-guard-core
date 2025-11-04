@@ -12,16 +12,6 @@ import (
 
 const checkName = "ensure-allowed-columns-header"
 
-// поля, которые мы всегда считаем допустимыми системными
-var coreAllowed = map[string]struct{}{
-	"term":          {},
-	"description":   {},
-	"casesensitive": {},
-	"translatable":  {},
-	"forbidden":     {},
-	"tags":          {},
-}
-
 func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
@@ -36,9 +26,6 @@ func init() {
 	}
 }
 
-// runEnsureAllowedColumnsHeader теперь просто заворачивает validate в RunWithFix.
-// фикса у нас нет, поэтому Fix = nil и ShouldAttemptFix вернёт ErrNoFix,
-// RunWithFix в этом случае вернёт FailAs как статус и не будет менять артефакт.
 func runEnsureAllowedColumnsHeader(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -53,8 +40,6 @@ func runEnsureAllowedColumnsHeader(ctx context.Context, a checks.Artifact, opts 
 	})
 }
 
-// validateAllowedColumnsHeader реализует всю аналитику и сводит её к OK / not OK.
-// важный момент: мы не проверяем порядок term/description — это уже сделано раньше.
 func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
@@ -64,7 +49,6 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
 	}
 
-	// читаем только первую НЕПУСТУЮ CSV-запись как хедер
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
@@ -93,7 +77,6 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 		}
 	}
 
-	// нормализованный в нижний регистр вайтлист языков, если юзер его передал
 	allowedLangsNorm := map[string]struct{}{}
 	for _, l := range a.Langs {
 		allowedLangsNorm[strings.ToLower(strings.TrimSpace(l))] = struct{}{}
@@ -116,16 +99,13 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 		}
 		colLower := strings.ToLower(colTrim)
 
-		// 1) системные поля?
-		if _, ok := coreAllowed[colLower]; ok {
+		if _, ok := checks.KnownHeaders[colLower]; ok {
 			continue
 		}
 
-		// 2) языковые поля?
 		langBase, isLangLike := parseLangColumn(colTrim)
 
 		if hasAllowed {
-			// строгий режим
 			if isLangLike {
 				langKeyNorm := strings.ToLower(langBase)
 				if _, ok := allowedLangsNorm[langKeyNorm]; ok {
@@ -137,7 +117,6 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 			}
 			unknownCols = appendIfMissing(unknownCols, colTrim)
 		} else {
-			// свободный режим
 			if isLangLike {
 				detectedLangsNoConfig = appendIfMissing(detectedLangsNoConfig, langBase)
 				continue
@@ -146,7 +125,6 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 		}
 	}
 
-	// строгий режим: проверяем, что все заявленные языки были увидены
 	if hasAllowed {
 		for langNorm := range allowedLangsNorm {
 			if !seenLang[langNorm] {
@@ -155,7 +133,6 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 		}
 	}
 
-	// приоритет сообщений
 	if len(unknownCols) > 0 {
 		return checks.ValidationResult{OK: false, Msg: "header has unknown columns: " + strings.Join(unknownCols, ", ")}
 	}
@@ -180,11 +157,6 @@ func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks
 	return checks.ValidationResult{OK: true, Msg: "header columns are allowed"}
 }
 
-// parseLangColumn говорит: это "<code>" или "<code>_description"?
-// возвращаем:
-//
-//	langBase (без "_description")
-//	isLangLike (true/false)
 func parseLangColumn(col string) (langBase string, isLangLike bool) {
 	if strings.HasSuffix(col, "_description") {
 		base := strings.TrimSuffix(col, "_description")
@@ -201,8 +173,7 @@ func parseLangColumn(col string) (langBase string, isLangLike bool) {
 	return "", false
 }
 
-// looksLikeLangCode пытается угадать локаль.
-// допускаем:
+// Supported locales:
 //
 //	en
 //	fr
@@ -211,14 +182,7 @@ func parseLangColumn(col string) (langBase string, isLangLike bool) {
 //	pt-BR
 //	zh_Hans_CN
 //
-// и т.д.
-//
-// логика:
-// - заменяем "-" на "_" для анализа
-// - первая часть (до "_") должна быть 2..3 буквы A-Za-z
-// - остальные части (если есть) состоят из [A-Za-z0-9]+
-//
-// это покрывает короткие коды, регионы, вариации скрипта и т.д.
+// and so on.
 func looksLikeLangCode(s string) bool {
 	if s == "" {
 		return false

@@ -8,13 +8,6 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-// asStr is just for readability in diffs
-func asStr(b []byte) string { return string(b) }
-
-// --------------------
-// Unit tests: fixDuplicateTermValues
-// --------------------
-
 func TestFixDuplicateTermValues_NoContent_NoFix(t *testing.T) {
 	t.Parallel()
 
@@ -109,9 +102,6 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 
 	// Apple appears twice (rows 2 and 5, 1-based).
 	// "apple" is different (case-sensitive).
-	//
-	// Also we add a blank/whitespace-only row in the middle to verify it's preserved.
-	//
 	// line numbers (1-based):
 	// 1 header
 	// 2 Apple;red
@@ -127,23 +117,6 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 		"apple;green\n" +
 		"Apple;sweet\n" +
 		"apple;bitter\n"
-
-	// expected:
-	// - keep first "Apple" (row2)
-	// - keep "Banana" (row3)
-	// - keep blank row (row4)
-	// - keep first "apple" (row5)
-	// - drop duplicate "Apple" (row6)
-	// - drop duplicate "apple" (row7)
-	//
-	// so output:
-	// header
-	// Apple;red
-	// Banana;yellow
-	// "   "
-	// apple;green
-	//
-	// note should mention Apple rows 6, apple rows 7 (1-based row nums)
 
 	want := "" +
 		"term;description\n" +
@@ -164,13 +137,11 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 		t.Fatalf("expected DidChange=true because duplicates exist")
 	}
 
-	// content projection must match expected
 	got := asStr(fr.Data)
 	if got != want {
 		t.Fatalf("fixed content mismatch.\n got:\n%q\nwant:\n%q", got, want)
 	}
 
-	// note sanity:
 	if fr.Note == "" {
 		t.Fatalf("expected a note describing removed rows")
 	}
@@ -180,7 +151,6 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 	if !strings.Contains(fr.Note, `"apple"`) {
 		t.Fatalf("expected note to mention \"apple\" separately, got: %q", fr.Note)
 	}
-	// Apple dup row was original line 6, apple dup row was original line 7
 	if !strings.Contains(fr.Note, "5") || !strings.Contains(fr.Note, "6") {
 		t.Fatalf("expected note to list removed row numbers 5 and 6, got: %q", fr.Note)
 	}
@@ -204,7 +174,6 @@ func TestRunWarnDuplicateTermValues_EndToEnd_NoFixPolicy(t *testing.T) {
 	}
 
 	out := runWarnDuplicateTermValues(ctx, a, checks.RunOptions{
-		// FixMode default (0 == FixNone): do not attempt fix
 		RerunAfterFix: true,
 	})
 
@@ -212,7 +181,6 @@ func TestRunWarnDuplicateTermValues_EndToEnd_NoFixPolicy(t *testing.T) {
 		t.Fatalf("expected WARN (since duplicates exist), got %s (%s)", out.Result.Status, out.Result.Message)
 	}
 
-	// no fix was applied under FixNone, so Final must match original
 	if out.Final.DidChange {
 		t.Fatalf("expected DidChange=false when fix is not attempted")
 	}
@@ -250,21 +218,10 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WithFixPolicy(t *testing.T) {
 	}
 
 	out := runWarnDuplicateTermValues(ctx, a, checks.RunOptions{
-		// allow fixes:
-		// FixMode governs whether RunWithFix should attempt to call Fix when validation fails.
-		// We want "attempt fixes only on FAIL/ERROR" OR "FixAlways" etc. Since this check returns WARN on failure,
-		// we need a mode that still allows fixing WARN.
-		//
-		// The most permissive is FixAlways, which is what we want here to exercise the fixer in tests.
 		FixMode:       checks.FixAlways,
 		RerunAfterFix: true,
 	})
 
-	// after fix:
-	// - validate saw duplicates -> not OK
-	// - Fix ran, removed dupe rows
-	// - RerunAfterFix revalidated, now OK=true
-	// - StatusAfterFixed = PASS in runWarnDuplicateTermValues
 	if out.Result.Status != checks.Pass {
 		t.Fatalf("expected final status PASS after successful auto-fix, got %s (%s)",
 			out.Result.Status, out.Result.Message)
@@ -284,9 +241,10 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WithFixPolicy(t *testing.T) {
 			out.Final.Path, a.Path)
 	}
 
-	// message after fix should mention we removed duplicate term rows
 	if !strings.Contains(out.Result.Message, "removed duplicate term rows") &&
 		!strings.Contains(out.Result.Message, "fixed") {
 		t.Fatalf("expected PASS message after fix to mention fix, got: %q", out.Result.Message)
 	}
 }
+
+func asStr(b []byte) string { return string(b) }

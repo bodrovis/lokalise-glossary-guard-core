@@ -17,7 +17,6 @@ func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
 		runWarnDuplicateTermValues,
-		// no FailFast(): duplicates in term are bad but not blocker
 		checks.WithPriority(13),
 	)
 	if err != nil {
@@ -28,7 +27,6 @@ func init() {
 	}
 }
 
-// runWarnDuplicateTermValues wires validation only. No auto-fix yet.
 func runWarnDuplicateTermValues(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
@@ -54,16 +52,14 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 		return checks.ValidationResult{OK: true, Msg: "no content to validate for duplicate term values"}
 	}
 
-	// CSV reader с разделителем ';'
 	br := bufio.NewReader(bytes.NewReader(a.Data))
 	r := csv.NewReader(br)
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
 
-	// читаем первую непустую запись как хедер
 	var header []string
-	recIdx := 0 // 1-based номер текущей записи
+	recIdx := 0
 	for {
 		rec, err := r.Read()
 		if err != nil {
@@ -86,7 +82,6 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 		}
 	}
 
-	// индекс колонки term (case-insensitive)
 	termCol := -1
 	for i, h := range header {
 		if strings.EqualFold(strings.TrimSpace(h), "term") {
@@ -98,7 +93,6 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 		return checks.ValidationResult{OK: true, Msg: "no 'term' column found (skipping duplicate term check)"}
 	}
 
-	// term -> список номеров строк (1-based по CSV-записям)
 	seen := make(map[string][]int)
 
 	rowNum := recIdx
@@ -111,11 +105,10 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 		}
 		rec, err := r.Read()
 		if err != nil {
-			break // EOF или парс-ошибка — другие чеки разрулят
+			break
 		}
 		rowNum++
 
-		// пропускаем полностью пустые строки
 		allEmpty := true
 		for _, c := range rec {
 			if strings.TrimSpace(c) != "" {
@@ -132,14 +125,12 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 			val = strings.TrimSpace(rec[termCol])
 		}
 		if val == "" {
-			continue // пустые термы валидируются отдельным чеком
+			continue
 		}
 
-		// важное: дубликаты считаем КЕЙС-СЕНСИТИВНО
 		seen[val] = append(seen[val], rowNum)
 	}
 
-	// собираем группы с >=2 вхождениями
 	type dupInfo struct {
 		term string
 		rows []int
@@ -154,7 +145,6 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 		return checks.ValidationResult{OK: true, Msg: "no duplicate term values"}
 	}
 
-	// форматируем до 10 групп
 	limit := 10
 	if len(dups) < limit {
 		limit = len(dups)
@@ -185,7 +175,6 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 	return checks.ValidationResult{OK: false, Msg: b.String()}
 }
 
-// joinIntSlice joins ints like "2, 5, 10".
 func joinIntSlice(nums []int, sep string) string {
 	if len(nums) == 0 {
 		return ""

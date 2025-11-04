@@ -11,11 +11,11 @@ import (
 func Test_validateAllowedColumnsHeader(t *testing.T) {
 	type tc struct {
 		name         string
-		headerLines  []string // we'll join with "\n"
+		headerLines  []string
 		langs        []string
 		wantOK       bool
-		wantInMsg    []string // all of these substrings must appear in Msg
-		wantNotInMsg []string // these substrings must NOT appear
+		wantInMsg    []string
+		wantNotInMsg []string
 	}
 
 	cases := []tc{

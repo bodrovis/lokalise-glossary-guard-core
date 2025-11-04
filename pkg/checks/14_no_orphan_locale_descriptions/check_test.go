@@ -63,7 +63,6 @@ func TestValidateWarnOrphanLocaleDescriptions_OrphanFound_Warn(t *testing.T) {
 		t.Fatalf("expected Err=nil, got %v", res.Err)
 	}
 
-	// should mention orphan base "en"
 	if !strings.Contains(res.Msg, "en") {
 		t.Fatalf("expected message to mention 'en', got: %q", res.Msg)
 	}
@@ -117,12 +116,13 @@ func TestValidateWarnOrphanLocaleDescriptions_ManyOrphans_Truncate(t *testing.T)
 	// build header with a ton of *_description columns without matching base columns
 	var b strings.Builder
 	b.WriteString("term;description;")
-	for i := 0; i < 15; i++ {
-		// locale li, but ONLY li_description, no li
+
+	for i := range 15 {
 		b.WriteString("l")
 		b.WriteString(strconv.Itoa(i))
 		b.WriteString("_description;")
 	}
+
 	// trim trailing ';'
 	header := strings.TrimSuffix(b.String(), ";")
 
@@ -143,12 +143,10 @@ func TestValidateWarnOrphanLocaleDescriptions_ManyOrphans_Truncate(t *testing.T)
 		t.Fatalf("expected Err=nil, got %v", res.Err)
 	}
 
-	// should include phrase "orphan *_description"
 	if !strings.Contains(res.Msg, "orphan *_description") {
 		t.Fatalf("expected message to mention orphan *_description, got: %q", res.Msg)
 	}
 
-	// should say total 15
 	if !strings.Contains(res.Msg, "total 15") {
 		t.Fatalf("expected total count 15 in message, got: %q", res.Msg)
 	}
@@ -189,7 +187,6 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WarnNoFix(t *testing.T) {
 	}
 
 	out := runWarnOrphanLocaleDescriptions(ctx, a, checks.RunOptions{
-		// FixMode default = FixNone, so no fix attempted anyway
 		RerunAfterFix: true,
 	})
 
@@ -197,7 +194,6 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WarnNoFix(t *testing.T) {
 		t.Fatalf("expected WARN, got %s (%s)", out.Result.Status, out.Result.Message)
 	}
 
-	// no fix => Final should match input
 	if out.Final.DidChange {
 		t.Fatalf("expected DidChange=false because no fixer is provided")
 	}

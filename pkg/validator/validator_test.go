@@ -11,20 +11,6 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/validator"
 )
 
-// helper: build a simple check with given name/priority/failfast and a run func
-func mkCheck(t *testing.T, name string, prio int, failfast bool, run func(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome) checks.CheckUnit {
-	t.Helper()
-	opts := []checks.Option{checks.WithPriority(prio)}
-	if failfast {
-		opts = append(opts, checks.WithFailFast())
-	}
-	ch, err := checks.NewCheckAdapter(name, run, opts...)
-	if err != nil {
-		t.Fatalf("mkCheck(%s): %v", name, err)
-	}
-	return ch
-}
-
 func TestValidate_OrderAndCounters(t *testing.T) {
 	checks.Reset()
 	t.Cleanup(checks.Reset)
@@ -229,4 +215,18 @@ func TestValidate_ContextTimeoutDuringRun(t *testing.T) {
 	if !sum.EarlyExit || sum.EarlyCheck != "context canceled" || sum.EarlyStatus != checks.Error {
 		t.Fatalf("early-exit mismatch on timeout: %+v", sum)
 	}
+}
+
+// helper: build a simple check with given name/priority/failfast and a run func
+func mkCheck(t *testing.T, name string, prio int, failfast bool, run func(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome) checks.CheckUnit {
+	t.Helper()
+	opts := []checks.Option{checks.WithPriority(prio)}
+	if failfast {
+		opts = append(opts, checks.WithFailFast())
+	}
+	ch, err := checks.NewCheckAdapter(name, run, opts...)
+	if err != nil {
+		t.Fatalf("mkCheck(%s): %v", name, err)
+	}
+	return ch
 }

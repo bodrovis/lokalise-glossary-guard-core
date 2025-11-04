@@ -125,7 +125,7 @@ func fixLowercaseHeader(ctx context.Context, a checks.Artifact) (checks.FixResul
 			continue
 		}
 		lc := strings.ToLower(t)
-		if _, ok := requiredLowercaseCols[lc]; ok && c != lc {
+		if _, ok := checks.KnownHeaders[lc]; ok && c != lc {
 			record[i] = lc
 			changed = true
 		}

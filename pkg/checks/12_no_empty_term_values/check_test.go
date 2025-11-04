@@ -106,15 +106,10 @@ func TestValidateNoEmptyTermValues_TooMany_EarlyCut(t *testing.T) {
 		t.Fatalf("expected Err=nil on FAIL, got %v", res.Err)
 	}
 
-	// should mention "total 15"
 	if !contains(res.Msg, "total 15") {
 		t.Fatalf("expected message to include total 15, got: %q", res.Msg)
 	}
 
-	// should not list more than 10 row numbers → quick heuristic:
-	// split by comma and count mentions
-	// first data row is line 2 (1-based), so first offending is line 2
-	// last data row is line 16 (1-based), but we only list first 10 of them
 	rowCountListed := countRowNumbersInMsg(res.Msg)
 	if rowCountListed > 10 {
 		t.Fatalf("expected at most 10 row numbers in message, got %d in %q", rowCountListed, res.Msg)
@@ -125,7 +120,7 @@ func TestValidateNoEmptyTermValues_NoHeader_Pass(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	csv := "\n\n   \n" // just blank
+	csv := "\n\n   \n"
 
 	a := checks.Artifact{
 		Data: []byte(csv),
@@ -149,11 +144,10 @@ func TestRunNoEmptyTermValues_EndToEnd(t *testing.T) {
 
 	ctx := context.Background()
 
-	// This CSV has an empty term in row 3 (1-based), so it should FAIL.
 	csv := "" +
 		"term;description\n" +
 		"hello;ok\n" +
-		"   ;bad desc\n" + // <- empty term here
+		"   ;bad desc\n" +
 		"world;ok2\n"
 
 	a := checks.Artifact{
@@ -162,7 +156,6 @@ func TestRunNoEmptyTermValues_EndToEnd(t *testing.T) {
 	}
 
 	out := runNoEmptyTermValues(ctx, a, checks.RunOptions{
-		// we don't even care about fix flags because there's no fix anyway
 		RerunAfterFix: true,
 	})
 
@@ -170,7 +163,6 @@ func TestRunNoEmptyTermValues_EndToEnd(t *testing.T) {
 		t.Fatalf("expected status=FAIL, got %s (%s)", out.Result.Status, out.Result.Message)
 	}
 
-	// since there is no fix, Final should be original
 	if out.Final.DidChange {
 		t.Fatalf("expected DidChange=false")
 	}
@@ -202,23 +194,16 @@ func stringsContains(s, sub string) bool {
 // this helper is just a cheap way to approximate "how many row numbers did we list"
 // it's fine for this test; we don't need perfect parsing, just length cap sanity.
 func countRowNumbersInMsg(msg string) int {
-	// naive: count how many commas +1 in the "empty term in rows:" section
-	// if message format changes, update test accordingly.
-	// example msg:
-	// "empty term in rows: 2, 3, 4 ... (total 15)"
-	//
-	// we'll split before "(total"
 	beforeTotal := msg
 	if idx := strings.Index(msg, "(total"); idx >= 0 {
 		beforeTotal = strings.TrimSpace(msg[:idx])
 	}
-	// now locate after colon
+
 	colonIdx := strings.Index(beforeTotal, ":")
 	if colonIdx < 0 {
 		return 0
 	}
 	listPart := strings.TrimSpace(beforeTotal[colonIdx+1:]) // "2, 3, 4 ..."
-	// drop trailing "..." if present
 	listPart = strings.TrimSuffix(listPart, "...")
 	listPart = strings.TrimSpace(listPart)
 

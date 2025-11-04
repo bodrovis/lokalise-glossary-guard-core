@@ -44,7 +44,11 @@ func validateSemicolonSeparated(ctx context.Context, a checks.Artifact) checks.V
 		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 	}
 
-	if len(bytes.TrimSpace(a.Data)) == 0 {
+	dataBytes := a.Data
+	if bytes.HasPrefix(dataBytes, []byte{0xEF, 0xBB, 0xBF}) {
+		dataBytes = dataBytes[3:]
+	}
+	if checks.IsBlankUnicode(dataBytes) {
 		return checks.ValidationResult{OK: false, Msg: "cannot detect separators: no usable content"}
 	}
 	data := string(a.Data)

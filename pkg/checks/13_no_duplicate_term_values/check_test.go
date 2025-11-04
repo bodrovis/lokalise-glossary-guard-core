@@ -67,17 +67,14 @@ func TestValidateWarnDuplicateTermValues_WithDuplicates_Warn(t *testing.T) {
 		t.Fatalf("expected Err=nil (WARN, not ERROR), got %v", res.Err)
 	}
 
-	// should mention the duplicated value "Apple"
 	if !strings.Contains(res.Msg, `"Apple"`) {
 		t.Fatalf("expected message to mention \"Apple\", got: %q", res.Msg)
 	}
 
-	// Should mention both row numbers for "Apple": 2 and 5.
 	if !strings.Contains(res.Msg, "2") || !strings.Contains(res.Msg, "5") {
 		t.Fatalf("expected message to mention rows 2 and 5, got: %q", res.Msg)
 	}
 
-	// should say total 1 duplicate term (only "Apple")
 	if !strings.Contains(res.Msg, "total 1") {
 		t.Fatalf("expected total count in message, got: %q", res.Msg)
 	}
@@ -88,13 +85,10 @@ func TestValidateWarnDuplicateTermValues_ManyDifferentDuplicates_TruncateList(t 
 
 	ctx := context.Background()
 
-	// we want more than 10 distinct duplicate terms to make sure we cap output
-	// pattern:
-	// T0 appears twice, T1 appears twice, ... etc.
 	var b strings.Builder
 	b.WriteString("term;description\n")
 
-	const totalDupTerms = 12 // >10 to exercise truncation
+	const totalDupTerms = 12
 	for i := 0; i < totalDupTerms; i++ {
 		term := "Word" + strconv.Itoa(i)
 		b.WriteString(term + ";x\n")
@@ -117,18 +111,14 @@ func TestValidateWarnDuplicateTermValues_ManyDifferentDuplicates_TruncateList(t 
 		t.Fatalf("expected Err=nil (WARN), got %v", res.Err)
 	}
 
-	// message should say "duplicate term values found:"
 	if !strings.Contains(res.Msg, "duplicate term values found:") {
 		t.Fatalf("expected message prefix, got: %q", res.Msg)
 	}
 
-	// should mention "total 12 duplicate terms"
 	if !strings.Contains(res.Msg, "total 12") {
 		t.Fatalf("expected total count '12' in message, got: %q", res.Msg)
 	}
 
-	// we cap details to first 10 groups.
-	// quick heuristic: count occurrences of `"Word` in Msg and expect <=10
 	countDetailed := strings.Count(res.Msg, `"Word`)
 	if countDetailed > 10 {
 		t.Fatalf("expected at most 10 detailed dup groups, got %d in %q", countDetailed, res.Msg)
@@ -170,7 +160,6 @@ func TestValidateWarnDuplicateTermValues_EmptyOrWhitespaceTerms_Ignored(t *testi
 	}
 }
 
-// if there's no 'term' column, this check just passes silently (another check will scream)
 func TestValidateWarnDuplicateTermValues_NoTermColumn_PASS(t *testing.T) {
 	t.Parallel()
 
@@ -207,7 +196,6 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WarnNoFix(t *testing.T) {
 
 	ctx := context.Background()
 
-	// Apple duplicated -> should WARN
 	csv := "" +
 		"term;description\n" +
 		"Apple;desc1\n" +
@@ -220,7 +208,6 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WarnNoFix(t *testing.T) {
 	}
 
 	out := runWarnDuplicateTermValues(ctx, a, checks.RunOptions{
-		// FixMode default is FixNone (0). We don't enable fixes anyway (Fix=nil).
 		RerunAfterFix: true,
 	})
 
@@ -228,7 +215,6 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WarnNoFix(t *testing.T) {
 		t.Fatalf("expected status WARN, got %s (%s)", out.Result.Status, out.Result.Message)
 	}
 
-	// no fix -> Final should match input
 	if out.Final.DidChange {
 		t.Fatalf("expected DidChange=false (no auto-fix)")
 	}

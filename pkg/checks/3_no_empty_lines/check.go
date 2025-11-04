@@ -46,7 +46,6 @@ func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.Validat
 	}
 	total, first10, err := findEmptyLines(ctx, a.Data)
 	if err != nil {
-		// если отменили контекст во время сканирования — отдаём «cancelled», а не общую ошибку
 		if ctx.Err() != nil {
 			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
 		}
@@ -70,7 +69,7 @@ func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.Validat
 // ─────────────────────────────────────────────────────────────────────────────
 
 // findEmptyLines scans with bufio.Scanner (large buffer) and returns the total
-// number of empty (whitespace-only) lines and up to the first 10 line numbers.
+// number of blank lines (Unicode whitespace + zero-width) and up to the first 10 line numbers.
 func findEmptyLines(ctx context.Context, b []byte) (int, []int, error) {
 	sc := bufio.NewScanner(bytes.NewReader(b))
 
@@ -89,7 +88,14 @@ func findEmptyLines(ctx context.Context, b []byte) (int, []int, error) {
 				return 0, nil, err
 			}
 		}
-		if len(bytes.TrimSpace(sc.Bytes())) == 0 {
+		chunk := sc.Bytes() // split by '\n'; possible trailing '\r' remains
+
+		// Normalize CRLF: strip trailing '\r' before blank check.
+		if n := len(chunk); n > 0 && chunk[n-1] == '\r' {
+			chunk = chunk[:n-1]
+		}
+
+		if checks.IsBlankUnicode(chunk) {
 			total++
 			if len(first) < 10 {
 				first = append(first, line)

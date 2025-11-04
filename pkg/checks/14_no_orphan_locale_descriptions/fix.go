@@ -62,9 +62,8 @@ func fixOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) (checks
 	}
 
 	before := in[:headerStart]
-	after := in[headerStart:] // starts at header
+	after := in[headerStart:]
 
-	// Parse CSV (;)
 	r := csv.NewReader(bytes.NewReader(after))
 	r.Comma = ';'
 	r.FieldsPerRecord = -1
@@ -84,28 +83,26 @@ func fixOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) (checks
 	}
 
 	type colMap struct {
-		label  string // имя колонки в новом хедере
-		srcIdx int    // откуда брать данные для остальных строк; -1 => вставка пустой колонки
+		label  string
+		srcIdx int
 	}
 	norm := func(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-	// Какие колонки были в оригинале (в нижнем регистре)
 	origSet := make(map[string]bool, len(header))
 	for _, h := range header {
 		origSet[norm(h)] = true
 	}
 
 	var mapping []colMap
-	addedBase := make(map[string]bool) // чтобы вставить base ровно один раз (перед первой *_description)
+	addedBase := make(map[string]bool)
 	insertedLocales := make([]string, 0, 8)
 
 	for j, col := range header {
 		colTrim := strings.TrimSpace(col)
 		lc := norm(colTrim)
 
-		// Если встретили "<loc>_description", а "<loc>" нет — добавляем "<loc>" перед ним
 		if strings.HasSuffix(lc, "_description") {
-			base := strings.TrimSuffix(lc, "_description") // уже lc+trim
+			base := strings.TrimSuffix(lc, "_description")
 			if base != "" && !origSet[base] && !addedBase[base] {
 				mapping = append(mapping, colMap{label: base, srcIdx: -1})
 				addedBase[base] = true
@@ -113,7 +110,6 @@ func fixOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) (checks
 			}
 		}
 
-		// Оставляем оригинальную колонку
 		mapping = append(mapping, colMap{label: colTrim, srcIdx: j})
 	}
 
@@ -121,9 +117,8 @@ func fixOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) (checks
 		return checks.NoFix(a, "no orphan *_description columns to fix")
 	}
 
-	// Пересборка: i==0 — это хедер, пишем labels; далее копируем по srcIdx
 	outRecs := make([][]string, len(records))
-	for i := 0; i < len(records); i++ {
+	for i := range len(records) {
 		if err := ctx.Err(); err != nil {
 			return checks.FixResult{}, err
 		}
@@ -151,7 +146,7 @@ func fixOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) (checks
 	var buf bytes.Buffer
 	w := csv.NewWriter(&buf)
 	w.Comma = ';'
-	for i := 0; i < len(outRecs); i++ {
+	for i := range len(outRecs) {
 		if err := ctx.Err(); err != nil {
 			return checks.FixResult{}, err
 		}
@@ -174,23 +169,21 @@ func fixOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) (checks
 		}, err
 	}
 
-	outTail := buf.Bytes() // '\n'
-	// вернуть исходный lineSep
+	outTail := buf.Bytes()
+
 	if lineSep == "\r\n" {
 		outTail = bytes.ReplaceAll(outTail, []byte("\n"), []byte("\r\n"))
 	}
-	// сохранить отсутствие финального NL, если его изначально не было
+
 	if !keepFinal && bytes.HasSuffix(outTail, []byte(lineSep)) {
 		outTail = outTail[:len(outTail)-len(lineSep)]
 	}
 
-	// собрать: пролог + тело + BOM
 	out := make([]byte, 0, len(bom)+len(before)+len(outTail))
 	out = append(out, bom...)
 	out = append(out, before...)
 	out = append(out, outTail...)
 
-	// Note — уникальные локали
 	seen := map[string]struct{}{}
 	locList := make([]string, 0, len(insertedLocales))
 	for _, loc := range insertedLocales {

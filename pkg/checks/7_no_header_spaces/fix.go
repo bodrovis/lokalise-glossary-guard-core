@@ -23,10 +23,9 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
 		bom, in = []byte{0xEF, 0xBB, 0xBF}, in[3:]
 	}
-	lineSep := checks.DetectLineEnding(in) // "\r\n" | "\n" (как в предыдущих фикcах)
+	lineSep := checks.DetectLineEnding(in)
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
-	// выделяем первую строку целиком, остальное не трогаем
 	firstLineEnd := bytes.IndexByte(in, '\n')
 	var headerLine []byte
 	var rest []byte
@@ -35,18 +34,17 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		headerLine = in
 		rest = nil
 	default:
-		headerLine = in[:firstLineEnd] // без '\n'
-		rest = in[firstLineEnd+1:]     // всё после первой строки
+		headerLine = in[:firstLineEnd]
+		rest = in[firstLineEnd+1:]
 		if len(headerLine) > 0 && headerLine[len(headerLine)-1] == '\r' {
-			headerLine = headerLine[:len(headerLine)-1] // срежем CR, если CRLF
+			headerLine = headerLine[:len(headerLine)-1]
 		}
 	}
 
-	// распарсим только хедер csv.Reader-ом с разделителем ';'
 	r := csv.NewReader(bytes.NewReader(headerLine))
 	r.Comma = ';'
 	r.LazyQuotes = true
-	r.FieldsPerRecord = -1 // не жёстко
+	r.FieldsPerRecord = -1
 
 	record, err := r.Read()
 	if err != nil {
@@ -65,7 +63,6 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "header already trimmed"}, nil
 	}
 
-	// соберём новый хедер корректным CSV-сериализатором
 	var hb bytes.Buffer
 	w := csv.NewWriter(&hb)
 	w.Comma = ';'
@@ -77,7 +74,6 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to flush header: " + err.Error()}, err
 	}
 
-	// csv.Writer всегда пишет '\n' в конце записи — приведём к исходному разделителю строк
 	newHeader := hb.Bytes()
 	if lineSep == "\r\n" {
 		newHeader = bytes.ReplaceAll(newHeader, []byte("\n"), []byte("\r\n"))
@@ -91,13 +87,11 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		}
 	}
 
-	// склеиваем: BOM + новый хедер + исходный хвост
 	out := make([]byte, 0, len(bom)+len(newHeader)+len(rest)+2)
 	out = append(out, bom...)
 	out = append(out, newHeader...)
 	out = append(out, rest...)
 
-	// восстановим финальный перевод строки, если он был, а мы его потеряли
 	if keepFinal && !bytes.HasSuffix(out, []byte("\n")) {
 		out = append(out, []byte(lineSep)...)
 	}

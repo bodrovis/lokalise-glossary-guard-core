@@ -15,7 +15,7 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 		name    string
 		csv     string
 		wantOK  bool
-		wantSub string // substring that must appear in Msg
+		wantSub string
 	}
 
 	cases := []tc{
@@ -26,24 +26,19 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			wantSub: "no duplicate header columns",
 		},
 		{
-			name:   "duplicate same name exact",
-			csv:    "term;description;term;fr\nx;y;z;w\n",
-			wantOK: false,
-			// we expect something like:
-			// "duplicate header columns: term(2)"
+			name:    "duplicate same name exact",
+			csv:     "term;description;term;fr\nx;y;z;w\n",
+			wantOK:  false,
 			wantSub: "duplicate header columns: term(2)",
 		},
 		{
-			name:   "duplicate case-insensitive",
-			csv:    "Term;description;TERM;DeScRiPtIoN\nfoo;bar;baz;qux\n",
-			wantOK: false,
-			// could be "term(2), description(2)" depending on iteration order in map.
-			// we'll just assert both "term(" and "description(" show up.
+			name:    "duplicate case-insensitive",
+			csv:     "Term;description;TERM;DeScRiPtIoN\nfoo;bar;baz;qux\n",
+			wantOK:  false,
 			wantSub: "duplicate header columns:",
 		},
 		{
-			name: "multiple unique cols, no dupes despite spacing",
-			// note: previous step in pipeline is supposed to trim, но валидатор сам триммит тоже.
+			name:    "multiple unique cols, no dupes despite spacing",
 			csv:     " term ; description ; fr ; de \nval1;val2;val3;val4\n",
 			wantOK:  true,
 			wantSub: "no duplicate header columns",
@@ -61,8 +56,7 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			wantSub: "no content to check for duplicate headers",
 		},
 		{
-			name: "duplicate empty headers",
-			// header has ;; so there's two empty names which should count as duplicates
+			name:    "duplicate empty headers",
 			csv:     "term;;description;;\nfoo;A;desc;B;\n",
 			wantOK:  false,
 			wantSub: "duplicate header columns:",
@@ -98,12 +92,10 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 	}
 }
 
-// contains is a tiny helper to avoid strings import bleed into each test block repeatedly.
 func contains(haystack, needle string) bool {
 	return stringsContains(haystack, needle)
 }
 
-// wrap stdlib so linter doesn't whine about unused imports if we tweak later
 func stringsContains(s, sub string) bool {
 	return strings.Contains(s, sub)
 }

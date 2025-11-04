@@ -121,8 +121,6 @@ func TestFixNoSpacesInHeader(t *testing.T) {
 				}
 				gotHeader := outLines[0]
 				if strings.TrimSpace(gotHeader) == "" && len(outLines) > 1 {
-					// если первая строка оказалась пустой (теоретически),
-					// найдём первую непустую как в рантайме
 					for _, ln := range outLines {
 						if strings.TrimSpace(ln) != "" {
 							gotHeader = ln
@@ -152,21 +150,21 @@ func TestFixNoSpacesInHeader_BOM_CRLF_Preserve(t *testing.T) {
 	if !fr.DidChange {
 		t.Fatalf("expected DidChange=true")
 	}
-	// BOM сохранён
+
 	if !strings.HasPrefix(string(fr.Data), bom) {
 		t.Fatalf("expected BOM prefix to be preserved")
 	}
-	// CRLF сохранён (нет одиночных \n)
+
 	out := string(fr.Data)
 	if strings.Contains(out, "\n") && !strings.Contains(out, "\r\n") {
 		t.Fatalf("expected CRLF line endings to be preserved")
 	}
-	// Хедер подрезан
+
 	firstLine := strings.Split(strings.TrimPrefix(out, bom), "\r\n")[0]
 	if firstLine != "term;description;foo" {
 		t.Fatalf("header after trim mismatch: got %q", firstLine)
 	}
-	// Финальный перевод строки сохранён (вход заканчивался \r\n)
+
 	if !strings.HasSuffix(out, "\r\n") {
 		t.Fatalf("expected final CRLF to be preserved")
 	}
@@ -175,7 +173,7 @@ func TestFixNoSpacesInHeader_BOM_CRLF_Preserve(t *testing.T) {
 func TestFixNoSpacesInHeader_NoFinalNL_PreserveAbsence(t *testing.T) {
 	t.Parallel()
 
-	in := "  term ;desc ;x" // без \n/\r\n в конце
+	in := "  term ;desc ;x"
 	a := checks.Artifact{Data: []byte(in), Path: "x.csv"}
 
 	fr, err := fixNoSpacesInHeader(context.Background(), a)
@@ -186,11 +184,9 @@ func TestFixNoSpacesInHeader_NoFinalNL_PreserveAbsence(t *testing.T) {
 		t.Fatalf("expected DidChange=true")
 	}
 	out := string(fr.Data)
-	// Хедер подрезан
 	if !strings.HasPrefix(out, "term;desc;x") {
 		t.Fatalf("trim failed: %q", out)
 	}
-	// Отсутствие финального NL сохраняем
 	if strings.HasSuffix(out, "\n") || strings.HasSuffix(out, "\r\n") {
 		t.Fatalf("did not expect final newline to be added")
 	}
@@ -199,7 +195,6 @@ func TestFixNoSpacesInHeader_NoFinalNL_PreserveAbsence(t *testing.T) {
 func TestFixNoSpacesInHeader_QuotedHeaderCells_UntouchedSemicolons(t *testing.T) {
 	t.Parallel()
 
-	// внутри кавычек ; не должно ломать парс
 	in := `"  te;rm  ";"  de;sc  ";foo  ` + "\n" + "v1;v2;v3\n"
 	a := checks.Artifact{Data: []byte(in), Path: "x.csv"}
 
@@ -210,9 +205,13 @@ func TestFixNoSpacesInHeader_QuotedHeaderCells_UntouchedSemicolons(t *testing.T)
 	if !fr.DidChange {
 		t.Fatalf("expected DidChange=true")
 	}
-	outFirst := strings.Split(string(fr.Data), "\n")[0]
-	// пробелы вокруг значений убраны, содержимое в кавычках сохранено как значение
+	out := strings.Split(string(fr.Data), "\n")
+	outFirst := out[0]
 	if outFirst != `"te;rm";"de;sc";foo` {
 		t.Fatalf("header after trim (quoted) mismatch: %q", outFirst)
+	}
+	outSecond := out[1]
+	if outSecond != "v1;v2;v3" {
+		t.Fatalf("second row after trimming header mismatch: %q", outSecond)
 	}
 }
