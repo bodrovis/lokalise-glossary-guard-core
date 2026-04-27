@@ -110,11 +110,13 @@ func findEmptyLines(ctx context.Context, b []byte) (int, []int, error) {
 
 func formatEmptyMsg(total int, first []int) string {
 	var sb strings.Builder
+
 	if total == 1 {
 		sb.WriteString("found 1 empty line")
 	} else {
-		sb.WriteString(fmt.Sprintf("found %d empty lines", total))
+		fmt.Fprintf(&sb, "found %d empty lines", total)
 	}
+
 	if len(first) > 0 {
 		sb.WriteString(" at lines ")
 		for i, n := range first {
@@ -123,9 +125,11 @@ func formatEmptyMsg(total int, first []int) string {
 			}
 			sb.WriteString(strconv.Itoa(n))
 		}
+
 		if more := total - len(first); more > 0 {
-			sb.WriteString(fmt.Sprintf(" (+%d more)", more))
+			fmt.Fprintf(&sb, " (+%d more)", more)
 		}
 	}
+
 	return sb.String()
 }
