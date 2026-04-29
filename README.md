@@ -5,4 +5,14 @@
 
 Core functionality for the [Lokalise Glossary Guard package](https://github.com/bodrovis/lokalise-glossary-guard).
 
+## Testing
+
+Run:
+
+```
+go test -shuffle=on -count=1 -race ./...
+```
+
+## License
+
 (c) [Elijah S. Krukowski](https://bodrovis.tech), BSD-3-Clause license

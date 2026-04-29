@@ -7,6 +7,7 @@ import (
 	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/13_no_duplicate_term_values"
 	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/14_no_orphan_locale_descriptions"
 	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/15_no_invalid_flags"
+	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/16_no_forbidden_non_translatable_terms"
 	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/1_valid_extension"
 	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/2_valid_encoding"
 	_ "github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks/3_no_empty_lines"
