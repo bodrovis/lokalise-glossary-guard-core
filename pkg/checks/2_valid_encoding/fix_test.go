@@ -72,7 +72,7 @@ func Test_fixUTF8_ConvertsNonUTF8(t *testing.T) {
 	}
 }
 
-func Test_fixUTF8_BrokenInput(t *testing.T) {
+func Test_fixUTF8_FallbackDecoderProducesValidUTF8(t *testing.T) {
 	// invalid UTF-8 byte sequence; decoder should still produce valid UTF-8 output
 	broken := []byte{0xC3, 0x28}
 
@@ -223,5 +223,100 @@ func Test_fixUTF8_Empty_NoOp(t *testing.T) {
 	}
 	if hasUTF8BOM(fr.Data) {
 		t.Fatalf("BOM must not be present in output")
+	}
+}
+
+func Test_fixUTF8_UTF16BE_NoBOM_Heuristic(t *testing.T) {
+	// "Hi" in UTF-16BE, no BOM: 00 48 00 69
+	data := []byte{0x00, 0x48, 0x00, 0x69}
+
+	fr, err := fixUTF8(context.Background(), checks.Artifact{Data: data})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !utf8.Valid(fr.Data) {
+		t.Fatalf("output not valid UTF-8")
+	}
+	if string(fr.Data) != "Hi" {
+		t.Fatalf("decoded mismatch: %q", string(fr.Data))
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true for UTF-16(BE,no BOM) re-encode")
+	}
+	if hasUTF8BOM(fr.Data) {
+		t.Fatalf("BOM must not be present in output")
+	}
+}
+
+func Test_fixUTF8_UTF16LE_WithBOM_OddLengthPads(t *testing.T) {
+	// BOM FF FE + incomplete UTF-16LE unit for 'H': 48
+	data := []byte{0xFF, 0xFE, 0x48}
+
+	fr, err := fixUTF8(context.Background(), checks.Artifact{Data: data})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !utf8.Valid(fr.Data) {
+		t.Fatalf("output not valid UTF-8")
+	}
+	if string(fr.Data) != "H" {
+		t.Fatalf("decoded mismatch: %q", string(fr.Data))
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+}
+
+func Test_fixUTF8_UTF32LE_WithBOM_PadsPartialRune(t *testing.T) {
+	// BOM FF FE 00 00 + partial UTF-32LE for 'H': 48
+	data := []byte{0xFF, 0xFE, 0x00, 0x00, 0x48}
+
+	fr, err := fixUTF8(context.Background(), checks.Artifact{Data: data})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !utf8.Valid(fr.Data) {
+		t.Fatalf("output not valid UTF-8")
+	}
+	if string(fr.Data) != "H" {
+		t.Fatalf("decoded mismatch: %q", string(fr.Data))
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+}
+
+func Test_fixUTF8_UTF32BE_InvalidRuneUsesReplacement(t *testing.T) {
+	// BOM 00 00 FE FF + invalid code point 0x110000
+	data := []byte{
+		0x00, 0x00, 0xFE, 0xFF,
+		0x00, 0x11, 0x00, 0x00,
+	}
+
+	fr, err := fixUTF8(context.Background(), checks.Artifact{Data: data})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !utf8.Valid(fr.Data) {
+		t.Fatalf("output not valid UTF-8")
+	}
+	if string(fr.Data) != string(utf8.RuneError) {
+		t.Fatalf("decoded mismatch: %q, want replacement rune", string(fr.Data))
+	}
+}
+
+func Test_fixUTF8_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fr, err := fixUTF8(ctx, checks.Artifact{Data: []byte("hello")})
+	if err == nil {
+		t.Fatalf("expected context error, got nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if fr.Data != nil {
+		t.Fatalf("Data = %q, want nil", string(fr.Data))
 	}
 }
