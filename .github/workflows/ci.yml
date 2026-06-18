@@ -22,10 +22,10 @@ jobs:
         cache: false
         
     - name: Run tests
-      run: go test -shuffle=on -count=1 -race ./...
+      run: go test -shuffle=on -count=1 -race ./... -v -coverprofile=coverage.out
 
     - uses: qltysh/qlty-action/coverage@v2.2.0
       with:
         token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
-        files: cover.out
+        files: coverage.out
         strip-prefix: github.com/bodrovis/lokalise-glossary-guard-core/
