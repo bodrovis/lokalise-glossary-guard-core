@@ -29,10 +29,7 @@ func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.Fi
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
 	// Parse entire CSV with semicolons
-	r := csv.NewReader(bytes.NewReader(in))
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
+	r := checks.NewSemicolonCSVReader(in)
 
 	records, err := r.ReadAll()
 	if err != nil || len(records) == 0 {

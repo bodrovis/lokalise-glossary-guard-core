@@ -42,3 +42,4 @@ checksums.txt
 *.tmp
 *.generated.go
 demo.go
+demo

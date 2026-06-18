@@ -232,3 +232,62 @@ func TestList_ReturnsCopy(t *testing.T) {
 		t.Fatalf("List aliased registry; len=%d", got1)
 	}
 }
+
+func TestRegister_ReplacesByTrimmedCaseInsensitiveName(t *testing.T) {
+	checks.Reset()
+	t.Cleanup(checks.Reset)
+
+	replaced, err := checks.Register(mkCheckOK(t, "  Same  ", checks.WithPriority(1)))
+	if err != nil {
+		t.Fatalf("first Register: %v", err)
+	}
+	if replaced {
+		t.Fatalf("first Register replaced=true, want false")
+	}
+
+	replaced, err = checks.Register(mkCheckOK(t, "same", checks.WithPriority(2), checks.WithFailFast()))
+	if err != nil {
+		t.Fatalf("second Register: %v", err)
+	}
+	if !replaced {
+		t.Fatalf("second Register replaced=false, want true")
+	}
+
+	if got := len(checks.List()); got != 1 {
+		t.Fatalf("registry length = %d, want 1", got)
+	}
+
+	c, ok := checks.Lookup(" SAME ")
+	if !ok {
+		t.Fatalf("Lookup did not find replacement")
+	}
+	if c.Name() != "same" {
+		t.Fatalf("Name = %q, want same", c.Name())
+	}
+	if c.Priority() != 2 {
+		t.Fatalf("Priority = %d, want 2", c.Priority())
+	}
+	if !c.FailFast() {
+		t.Fatalf("FailFast=false, want true")
+	}
+}
+
+type fakeRegistryCheck struct {
+	name     string
+	priority int
+	failFast bool
+}
+
+func (f fakeRegistryCheck) Name() string { return f.name }
+
+func (f fakeRegistryCheck) Run(
+	context.Context,
+	checks.Artifact,
+	checks.RunOptions,
+) checks.CheckOutcome {
+	return checks.CheckOutcome{}
+}
+
+func (f fakeRegistryCheck) FailFast() bool { return f.failFast }
+
+func (f fakeRegistryCheck) Priority() int { return f.priority }

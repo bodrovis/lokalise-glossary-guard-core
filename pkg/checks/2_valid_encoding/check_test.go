@@ -3,6 +3,7 @@ package valid_encoding
 import (
 	"context"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
@@ -10,10 +11,7 @@ import (
 const utf8Name = "ensure-utf8-encoding"
 
 func TestEnsureUTF8_Metadata(t *testing.T) {
-	c, ok := checks.Lookup(utf8Name)
-	if !ok {
-		t.Fatalf("check %q not registered", utf8Name)
-	}
+	c := lookupUTF8Check(t)
 	if got, want := c.Name(), utf8Name; got != want {
 		t.Fatalf("Name() = %q, want %q", got, want)
 	}
@@ -25,11 +23,83 @@ func TestEnsureUTF8_Metadata(t *testing.T) {
 	}
 }
 
-func TestEnsureUTF8_Run_Fail_EmptyFile(t *testing.T) {
-	c, ok := checks.Lookup(utf8Name)
-	if !ok {
-		t.Fatalf("check %q not registered", utf8Name)
+func TestEnsureUTF8_Run_Error_ContextCancelled(t *testing.T) {
+	c := lookupUTF8Check(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	out := c.Run(ctx, checks.Artifact{Data: []byte("hello")}, checks.RunOptions{})
+
+	if out.Result.Status != checks.Error {
+		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Error, out.Result.Message)
 	}
+	if out.Result.Message != context.Canceled.Error() {
+		t.Fatalf("Message = %q, want %q", out.Result.Message, context.Canceled.Error())
+	}
+	if out.Final.DidChange {
+		t.Fatalf("DidChange = true, want false")
+	}
+}
+
+func TestEnsureUTF8_Run_Fail_InvalidBytesReportsExactOffset(t *testing.T) {
+	c := lookupUTF8Check(t)
+
+	bad := []byte("ok ")
+	bad = append(bad, 0xFF, 0xFE)
+	bad = append(bad, ' ')
+	bad = append(bad, 0xC3, 0x28)
+
+	out := c.Run(context.Background(), checks.Artifact{Data: bad}, checks.RunOptions{})
+
+	if out.Result.Status != checks.Fail {
+		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Fail, out.Result.Message)
+	}
+
+	want := "invalid UTF-8 sequence at byte 3 of 8"
+	if out.Result.Message != want {
+		t.Fatalf("Message = %q, want %q", out.Result.Message, want)
+	}
+}
+
+func TestEnsureUTF8_Run_Pass_ReplacementRuneIsValidUTF8(t *testing.T) {
+	c := lookupUTF8Check(t)
+
+	out := c.Run(context.Background(), checks.Artifact{
+		Data: []byte("valid replacement rune: �"),
+	}, checks.RunOptions{})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Pass, out.Result.Message)
+	}
+}
+
+func TestEnsureUTF8_Run_Fail_InvalidBytesWithoutFixDoesNotChangeData(t *testing.T) {
+	c := lookupUTF8Check(t)
+
+	input := []byte{0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2}
+
+	out := c.Run(context.Background(), checks.Artifact{Data: input, Path: "bad.csv"}, checks.RunOptions{
+		FixMode:       checks.FixNone,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Fail {
+		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Fail, out.Result.Message)
+	}
+	if out.Final.DidChange {
+		t.Fatalf("DidChange = true, want false")
+	}
+	if string(out.Final.Data) != string(input) {
+		t.Fatalf("Final.Data changed: got %v want %v", out.Final.Data, input)
+	}
+	if out.Final.Path != "bad.csv" {
+		t.Fatalf("Final.Path = %q, want bad.csv", out.Final.Path)
+	}
+}
+
+func TestEnsureUTF8_Run_Fail_EmptyFile(t *testing.T) {
+	c := lookupUTF8Check(t)
 	out := c.Run(context.Background(), checks.Artifact{Data: []byte(""), Path: "", Langs: nil}, checks.RunOptions{})
 	if out.Result.Status != checks.Fail {
 		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Fail, out.Result.Message)
@@ -44,7 +114,7 @@ func TestEnsureUTF8_Run_Fail_EmptyFile(t *testing.T) {
 }
 
 func TestEnsureUTF8_Run_Pass_SimpleASCII(t *testing.T) {
-	c, _ := checks.Lookup(utf8Name)
+	c := lookupUTF8Check(t)
 	out := c.Run(context.Background(), checks.Artifact{Data: []byte("hello, world\n")}, checks.RunOptions{})
 	if out.Result.Status != checks.Pass {
 		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Pass, out.Result.Message)
@@ -55,7 +125,7 @@ func TestEnsureUTF8_Run_Pass_SimpleASCII(t *testing.T) {
 }
 
 func TestEnsureUTF8_Run_Pass_UTF8BOM(t *testing.T) {
-	c, _ := checks.Lookup(utf8Name)
+	c := lookupUTF8Check(t)
 	data := append([]byte{0xEF, 0xBB, 0xBF}, []byte("with bom")...)
 	out := c.Run(context.Background(), checks.Artifact{Data: data}, checks.RunOptions{})
 	if out.Result.Status != checks.Pass {
@@ -64,7 +134,7 @@ func TestEnsureUTF8_Run_Pass_UTF8BOM(t *testing.T) {
 }
 
 func TestEnsureUTF8_Run_Pass_Multibyte(t *testing.T) {
-	c, _ := checks.Lookup(utf8Name)
+	c := lookupUTF8Check(t)
 	out := c.Run(context.Background(), checks.Artifact{Data: []byte("Привет, 你好!")}, checks.RunOptions{})
 	if out.Result.Status != checks.Pass {
 		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Pass, out.Result.Message)
@@ -72,7 +142,7 @@ func TestEnsureUTF8_Run_Pass_Multibyte(t *testing.T) {
 }
 
 func TestEnsureUTF8_Run_Fail_InvalidBytes(t *testing.T) {
-	c, _ := checks.Lookup(utf8Name)
+	c := lookupUTF8Check(t)
 
 	var bad []byte
 	bad = append(bad, []byte("ok ")...) // valid prefix
@@ -93,38 +163,31 @@ func TestEnsureUTF8_Run_Fail_InvalidBytes(t *testing.T) {
 	}
 }
 
-// optional: direct Fix smoke test via type-assert (since Fix is not on the public interface)
 func TestEnsureUTF8_Fix_Simple(t *testing.T) {
-	t.Parallel()
+	c := lookupUTF8Check(t)
 
-	c, ok := checks.Lookup(utf8Name)
-	if !ok {
-		t.Fatalf("check %q not registered", utf8Name)
-	}
-
-	// CP1251 encoded "Привет"
+	// CP1251 encoded "Привет"; invalid as raw UTF-8.
 	input := []byte{0xCF, 0xF0, 0xE8, 0xE2, 0xE5, 0xF2}
 
-	opts := checks.RunOptions{
+	out := c.Run(context.Background(), checks.Artifact{Data: input}, checks.RunOptions{
 		FixMode:       checks.FixIfNotPass,
 		RerunAfterFix: true,
-	}
-
-	out := c.Run(context.Background(), checks.Artifact{Data: input}, opts)
+	})
 
 	if out.Result.Status == checks.Error {
 		t.Fatalf("unexpected ERROR: %q", out.Result.Message)
 	}
-
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("Status = %s, want %s; msg=%q", out.Result.Status, checks.Pass, out.Result.Message)
+	}
 	if !out.Final.DidChange {
-		t.Fatalf("expected DidChange=true (fix must modify data)")
+		t.Fatalf("expected DidChange=true")
 	}
 	if len(out.Final.Data) == 0 {
 		t.Fatalf("expected non-empty fixed data")
 	}
-
-	if !containsLowerCheap(string(out.Final.Data), "привет") && !containsLowerCheap(string(out.Final.Data), "privet") {
-		t.Logf("fixed output: %q", string(out.Final.Data))
+	if !utf8.Valid(out.Final.Data) {
+		t.Fatalf("fixed data is not valid UTF-8: %v", out.Final.Data)
 	}
 }
 
@@ -157,4 +220,15 @@ func containsLowerCheap(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+func lookupUTF8Check(t *testing.T) checks.CheckUnit {
+	t.Helper()
+
+	c, ok := checks.Lookup(utf8Name)
+	if !ok {
+		t.Fatalf("check %q not registered", utf8Name)
+	}
+
+	return c
 }

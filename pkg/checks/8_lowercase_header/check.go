@@ -1,10 +1,7 @@
 package lowercase_header
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -43,25 +40,25 @@ func runEnsureLowercaseHeader(ctx context.Context, a checks.Artifact, opts check
 }
 
 func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
+		ctx,
+		a,
+		"cannot check header: no usable content",
+	)
+	if !ok {
+		return res
 	}
-	if len(bytes.TrimSpace(a.Data)) == 0 {
-		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
-	}
-
-	br := bufio.NewReader(bytes.NewReader(a.Data))
-	r := csv.NewReader(br)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
 
 	header, err := r.Read()
 	if err != nil || len(header) == 0 {
 		if ctx.Err() != nil {
 			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
 		}
-		return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "cannot parse header with semicolon delimiter",
+			Err: err,
+		}
 	}
 
 	var bad []string
@@ -69,14 +66,17 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 		if err := ctx.Err(); err != nil {
 			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
 		}
+
 		trimmed := strings.TrimSpace(col)
 		if trimmed == "" {
 			continue
 		}
+
 		lc := strings.ToLower(trimmed)
 		if _, want := checks.KnownHeaders[lc]; !want {
 			continue
 		}
+
 		if trimmed != lc {
 			bad = append(bad, strconv.Itoa(i+1))
 		}
@@ -88,5 +88,6 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 			Msg: "some service columns in header are not lowercase at positions: " + strings.Join(bad, ", "),
 		}
 	}
+
 	return checks.ValidationResult{OK: true, Msg: "header service columns are already lowercase"}
 }

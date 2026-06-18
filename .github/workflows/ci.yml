@@ -23,3 +23,9 @@ jobs:
         
     - name: Run tests
       run: go test -shuffle=on -count=1 -race ./...
+
+    - uses: qltysh/qlty-action/coverage@v2.2.0
+      with:
+        token: ${{ secrets.QLTY_COVERAGE_TOKEN }}
+        files: coverage.out
+        strip-prefix: github.com/bodrovis/lokalise-glossary-guard-core/

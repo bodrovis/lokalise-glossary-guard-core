@@ -1,10 +1,7 @@
 package term_description_header
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/csv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -41,18 +38,14 @@ func runEnsureTermDescriptionHeader(ctx context.Context, a checks.Artifact, opts
 }
 
 func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
+		ctx,
+		a,
+		"cannot check header: no usable content",
+	)
+	if !ok {
+		return res
 	}
-	if len(bytes.TrimSpace(a.Data)) == 0 {
-		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
-	}
-
-	br := bufio.NewReader(bytes.NewReader(a.Data))
-	r := csv.NewReader(br)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
 
 	var header []string
 	for {

@@ -8,7 +8,10 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-const checkName = "ensure-utf8-encoding"
+const (
+	checkName      = "ensure-utf8-encoding"
+	checkEveryByte = 1 << 16
+)
 
 func init() {
 	ch, err := checks.NewCheckAdapter(
@@ -39,37 +42,65 @@ func runUTF8Check(ctx context.Context, a checks.Artifact, opts checks.RunOptions
 
 func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return cancelledValidation(err)
 	}
 
-	data := a.Data
-	if len(data) == 0 {
+	if res, ok := validateNonEmptyData(a.Data); !ok {
+		return res
+	}
+
+	pos, err := firstInvalidUTF8Byte(ctx, a.Data)
+	if err != nil {
+		return cancelledValidation(err)
+	}
+	if pos >= 0 {
 		return checks.ValidationResult{
-			OK:  false,
-			Msg: "empty file: cannot determine encoding (expected UTF-8)",
+			OK: false,
+			Msg: fmt.Sprintf(
+				"invalid UTF-8 sequence at byte %d of %d",
+				pos,
+				len(a.Data),
+			),
 		}
 	}
 
-	if utf8.Valid(data) {
-		return checks.ValidationResult{OK: true, Msg: "valid UTF-8"}
+	return checks.ValidationResult{OK: true, Msg: "valid UTF-8"}
+}
+
+func validateNonEmptyData(data []byte) (checks.ValidationResult, bool) {
+	if len(data) > 0 {
+		return checks.ValidationResult{}, true
 	}
 
-	const checkEvery = 1 << 16
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "empty file: cannot determine encoding (expected UTF-8)",
+	}, false
+}
+
+func firstInvalidUTF8Byte(ctx context.Context, data []byte) (int, error) {
 	for i := 0; i < len(data); {
-		if (i & (checkEvery - 1)) == 0 {
+		if i%checkEveryByte == 0 {
 			if err := ctx.Err(); err != nil {
-				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+				return -1, err
 			}
 		}
+
 		r, size := utf8.DecodeRune(data[i:])
 		if r == utf8.RuneError && size == 1 {
-			return checks.ValidationResult{
-				OK:  false,
-				Msg: fmt.Sprintf("invalid UTF-8 sequence at byte %d of %d", i, len(data)),
-			}
+			return i, nil
 		}
+
 		i += size
 	}
 
-	return checks.ValidationResult{OK: false, Msg: "invalid UTF-8 encoding"}
+	return -1, nil
+}
+
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
 }

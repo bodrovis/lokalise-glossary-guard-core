@@ -2,6 +2,6 @@ module github.com/bodrovis/lokalise-glossary-guard-core
 
 go 1.26
 
-require golang.org/x/net v0.55.0
+require golang.org/x/net v0.56.0
 
-require golang.org/x/text v0.37.0 // indirect
+require golang.org/x/text v0.38.0 // indirect
