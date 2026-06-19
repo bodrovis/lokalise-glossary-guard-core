@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime/debug"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -116,68 +113,4 @@ func OutcomeKeep(st Status, name, msg string, a Artifact, note string) CheckOutc
 		Result: CheckResult{Name: name, Status: st, Message: msg},
 		Final:  FixResult{Data: a.Data, Path: a.Path, DidChange: false, Note: note},
 	}
-}
-
-func DetectLineEnding(b []byte) string {
-	crlf := 0
-	lf := 0
-	for i, ch := range b {
-		if ch == '\n' {
-			if i > 0 && b[i-1] == '\r' {
-				crlf++
-			} else {
-				lf++
-			}
-		}
-	}
-	if crlf > lf {
-		return "\r\n"
-	}
-	return "\n"
-}
-
-func AnyNonEmpty(rec []string) bool {
-	for _, v := range rec {
-		if strings.TrimSpace(v) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// isBlankUnicode reports whether the line consists only of Unicode whitespace
-// plus additional zero-width/invisible code points that are commonly present
-// in "blank-looking" lines (ZWSP, ZWNJ, ZWJ, WORD JOINER, BOM, etc.).
-func IsBlankUnicode(b []byte) bool {
-	// Extra invisibles not covered by unicode.IsSpace.
-	switch {
-	// Fast-path: empty slice
-	case len(b) == 0:
-		return true
-	}
-	extra := func(r rune) bool {
-		switch r {
-		case '\u200B', // ZERO WIDTH SPACE
-			'\u200C', // ZERO WIDTH NON-JOINER
-			'\u200D', // ZERO WIDTH JOINER
-			'\u2060', // WORD JOINER
-			'\ufeff', // BOM
-			'\u180E': // MONGOLIAN VOWEL SEPARATOR (deprecated but still seen)
-			return true
-		}
-		return false
-	}
-
-	for i := 0; i < len(b); {
-		r, size := utf8.DecodeRune(b[i:])
-		if r == utf8.RuneError && size == 1 {
-			// Treat undecodable byte as non-blank.
-			return false
-		}
-		if !unicode.IsSpace(r) && !extra(r) {
-			return false
-		}
-		i += size
-	}
-	return true
 }

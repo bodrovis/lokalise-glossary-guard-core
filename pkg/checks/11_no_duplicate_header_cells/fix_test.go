@@ -20,19 +20,16 @@ func TestFixDuplicateHeaderCells_NoDuplicates_NoFix(t *testing.T) {
 	}
 
 	fr, err := fixDuplicateHeaderCells(ctx, a)
-	if err == nil {
-		t.Fatalf("expected ErrNoFix, got nil")
-	}
-	if err != checks.ErrNoFix {
-		t.Fatalf("expected ErrNoFix, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
 
 	if fr.DidChange {
 		t.Fatalf("DidChange should be false when no fix was applied")
 	}
 
-	if asStr(fr.Data) != input {
-		t.Fatalf("data must remain unchanged when no fix applied.\n got: %q\nwant:%q", asStr(fr.Data), input)
+	if string(fr.Data) != input {
+		t.Fatalf("data must remain unchanged when no fix applied.\n got: %q\nwant:%q", string(fr.Data), input)
 	}
 
 	if fr.Path != "" {
@@ -73,8 +70,8 @@ func TestFixDuplicateHeaderCells_RemovesSecondAndLaterDuplicates(t *testing.T) {
 		t.Fatalf("DidChange should be true when we actually removed duplicate columns")
 	}
 
-	if asStr(fr.Data) != want {
-		t.Fatalf("fixed data mismatch.\n got:\n%q\nwant:\n%q", asStr(fr.Data), want)
+	if string(fr.Data) != want {
+		t.Fatalf("fixed data mismatch.\n got:\n%q\nwant:\n%q", string(fr.Data), want)
 	}
 
 	if fr.Path != "" {
@@ -115,7 +112,7 @@ func TestFixDuplicateHeaderCells_PreservesUniqueColumnsAndOrder(t *testing.T) {
 		t.Fatalf("expected DidChange=true because we removed a dup col")
 	}
 
-	got := asStr(fr.Data)
+	got := string(fr.Data)
 	if got != want {
 		t.Fatalf("projection messed up unique columns.\n got:\n%q\nwant:\n%q", got, want)
 	}
@@ -161,6 +158,40 @@ func TestRunWarnDuplicateHeaderCells_EndToEnd_NoAutoFix(t *testing.T) {
 	}
 }
 
-func asStr(b []byte) string {
-	return string(b)
+func TestRunWarnDuplicateHeaderCells_EndToEnd_WithAutoFix(t *testing.T) {
+	t.Parallel()
+
+	input := "" +
+		"term;description;term;fr;fr\n" +
+		"x;y;x2;frA;frB\n"
+
+	a := checks.Artifact{
+		Data: []byte(input),
+		Path: "dup.csv",
+	}
+
+	out := runWarnDuplicateHeaderCells(context.Background(), a, checks.RunOptions{
+		FixMode:       checks.FixIfFailed,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("expected PASS after fix+rerun, got %s (%s)", out.Result.Status, out.Result.Message)
+	}
+
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "" +
+		"term;description;fr\n" +
+		"x;y;frA\n"
+
+	if string(out.Final.Data) != want {
+		t.Fatalf("final data mismatch.\n got:\n%q\nwant:\n%q", string(out.Final.Data), want)
+	}
+
+	if out.Final.Path != a.Path {
+		t.Fatalf("artifact path must remain unchanged; got %q want %q", out.Final.Path, a.Path)
+	}
 }

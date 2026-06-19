@@ -40,46 +40,14 @@ func runEnsureLowercaseHeader(ctx context.Context, a checks.Artifact, opts check
 }
 
 func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
-		ctx,
-		a,
-		"cannot check header: no usable content",
-	)
+	header, res, ok := readHeader(ctx, a)
 	if !ok {
 		return res
 	}
 
-	header, err := r.Read()
-	if err != nil || len(header) == 0 {
-		if ctx.Err() != nil {
-			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
-		}
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot parse header with semicolon delimiter",
-			Err: err,
-		}
-	}
-
-	var bad []string
-	for i, col := range header {
-		if err := ctx.Err(); err != nil {
-			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
-		}
-
-		trimmed := strings.TrimSpace(col)
-		if trimmed == "" {
-			continue
-		}
-
-		lc := strings.ToLower(trimmed)
-		if _, want := checks.KnownHeaders[lc]; !want {
-			continue
-		}
-
-		if trimmed != lc {
-			bad = append(bad, strconv.Itoa(i+1))
-		}
+	bad, err := findNonLowercaseServiceHeaderColumns(ctx, header)
+	if err != nil {
+		return cancelledValidation(err)
 	}
 
 	if len(bad) > 0 {
@@ -89,5 +57,72 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 		}
 	}
 
-	return checks.ValidationResult{OK: true, Msg: "header service columns are already lowercase"}
+	return checks.ValidationResult{
+		OK:  true,
+		Msg: "header service columns are already lowercase",
+	}
+}
+
+func readHeader(ctx context.Context, a checks.Artifact) ([]string, checks.ValidationResult, bool) {
+	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
+		ctx,
+		a,
+		"cannot check header: no usable content",
+	)
+	if !ok {
+		return nil, res, false
+	}
+
+	header, err := r.Read()
+	if err != nil || len(header) == 0 {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, cancelledValidation(ctxErr), false
+		}
+
+		return nil, checks.ValidationResult{
+			OK:  false,
+			Msg: "cannot parse header with semicolon delimiter",
+			Err: err,
+		}, false
+	}
+
+	return header, checks.ValidationResult{}, true
+}
+
+func findNonLowercaseServiceHeaderColumns(ctx context.Context, header []string) ([]string, error) {
+	var bad []string
+
+	for i, col := range header {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if isNonLowercaseKnownHeader(col) {
+			bad = append(bad, strconv.Itoa(i+1))
+		}
+	}
+
+	return bad, nil
+}
+
+func isNonLowercaseKnownHeader(col string) bool {
+	trimmed := strings.TrimSpace(col)
+	if trimmed == "" {
+		return false
+	}
+
+	lower := strings.ToLower(trimmed)
+	if _, ok := checks.KnownHeaders[lower]; !ok {
+		return false
+	}
+
+	return trimmed != lower
+}
+
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
 }

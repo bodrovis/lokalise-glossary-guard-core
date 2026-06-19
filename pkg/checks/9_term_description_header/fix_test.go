@@ -2,6 +2,7 @@ package term_description_header
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -56,14 +57,20 @@ func TestFixTermDescriptionHeader(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := checks.Artifact{Data: []byte(tt.data)}
+			a := checks.Artifact{
+				Data: []byte(tt.data),
+				Path: "whatever.csv",
+			}
+
 			res, err := fixTermDescriptionHeader(ctx, a)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
+
 			if res.DidChange != tt.changed {
 				t.Errorf("expected DidChange=%v, got %v", tt.changed, res.DidChange)
 			}
+
 			if got := string(res.Data); got != tt.expected {
 				t.Errorf("expected fixed data:\n%s\ngot:\n%s", tt.expected, got)
 			}
@@ -71,8 +78,8 @@ func TestFixTermDescriptionHeader(t *testing.T) {
 	}
 }
 
-// End-to-end test through runEnsureTermDescriptionHeader (validate + fix)
-func TestRunEnsureTermDescriptionHeader_EndToEnd(t *testing.T) {
+// invalid header, but FixMode is default/FixNone, so no auto-fix is attempted
+func TestRunEnsureTermDescriptionHeader_EndToEnd_NoAutoFix(t *testing.T) {
 	ctx := context.Background()
 
 	// invalid header: description before term
@@ -99,5 +106,108 @@ func TestRunEnsureTermDescriptionHeader_EndToEnd(t *testing.T) {
 
 	if out.Final.Path != a.Path {
 		t.Fatalf("artifact path must remain unchanged")
+	}
+}
+
+func TestRunEnsureTermDescriptionHeader_EndToEnd_WithAutoFix(t *testing.T) {
+	ctx := context.Background()
+
+	a := checks.Artifact{
+		Data: []byte("description;term;context\nx;y;z\n"),
+		Path: "bad.csv",
+	}
+
+	out := runEnsureTermDescriptionHeader(ctx, a, checks.RunOptions{
+		FixMode:       checks.FixIfFailed,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("expected PASS after fix+rerun, got %s (%s)", out.Result.Status, out.Result.Message)
+	}
+
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "term;description;context\ny;x;z\n"
+	if got := string(out.Final.Data); got != want {
+		t.Fatalf("final data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+
+	if out.Final.Path != a.Path {
+		t.Fatalf("Final.Path = %q, want %q", out.Final.Path, a.Path)
+	}
+}
+
+func TestFixTermDescriptionHeader_PreservesBOMCRLFAndFinalNewline(t *testing.T) {
+	const bom = "\xEF\xBB\xBF"
+
+	in := bom + "description;term;context\r\nx;y;z\r\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	res, err := fixTermDescriptionHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := bom + "term;description;context\r\ny;x;z\r\n"
+	if got := string(res.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestFixTermDescriptionHeader_PreservesLeadingBlankLines(t *testing.T) {
+	in := "\n  \n description;term;context\nx;y;z\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	res, err := fixTermDescriptionHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !res.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "\n  \nterm;description;context\ny;x;z\n"
+	if got := string(res.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestFixTermDescriptionHeader_PreservesNoFinalNewline(t *testing.T) {
+	in := "description;term;context\nx;y;z"
+	a := checks.Artifact{Data: []byte(in)}
+
+	res, err := fixTermDescriptionHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "term;description;context\ny;x;z"
+	if got := string(res.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+
+	if strings.HasSuffix(string(res.Data), "\n") {
+		t.Fatalf("did not expect final newline to be added")
+	}
+}
+
+func TestFixTermDescriptionHeader_DoesNotDropDuplicateTermLikeColumns(t *testing.T) {
+	in := "description;term;term;context\nD;T;T2;C"
+	a := checks.Artifact{Data: []byte(in)}
+
+	res, err := fixTermDescriptionHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := "term;description;term;context\nT;D;T2;C"
+	if got := string(res.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
 	}
 }

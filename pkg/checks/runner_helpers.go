@@ -88,14 +88,14 @@ func RunWithFix(ctx context.Context, a Artifact, opts RunOptions, r RunRecipe) C
 			st := nzStatus(r.StatusAfterFixed, Warn) // default: "fixed → WARN"
 			return OutcomeWithFinal(st, r.Name, nz(r.FixedMsg, "fixed"), final)
 		}
-		msg := nzPref(nz(r.StillBadMsg, "auto-fix attempted but still invalid"), after.Msg, " : ")
+		msg := nzPref(nz(r.StillBadMsg, "auto-fix attempted but still invalid"), after.Msg, ": ")
 		return OutcomeWithFinal(failAs, r.Name, msg, final)
 	}
 
 	// no revalidate: just report that we applied something
 	applied := nz(r.AppliedMsg, "auto-fix applied")
-	if !changed && fr.Note == "" {
-		applied = "auto-fix attempted (no changes)"
+	if !changed {
+		applied = nz(fr.Note, "auto-fix attempted (no changes)")
 	}
 	st := Warn
 	if failAs == Error {
@@ -134,7 +134,7 @@ func safeValidate(name string, v ValidateFunc, ctx context.Context, a Artifact) 
 			vr = ValidationResult{
 				OK:  false,
 				Msg: fmt.Sprintf("panic in %s validate: %v\n%s", name, r, debug.Stack()),
-				Err: fmt.Errorf("panic"),
+				Err: fmt.Errorf("panic in %s validate: %v", name, r),
 			}
 		}
 	}()
@@ -160,7 +160,9 @@ func propagateAfterFix(in Artifact, fr FixResult) (outData []byte, outPath strin
 	return outData, outPath, didChange
 }
 
-// shouldAttemptFix returns true if the runner policy says we may fix for a given status.
+// shouldAttemptFix returns true if the runner policy allows fixing after validation failed.
+// The status passed here is the validation-failure severity used for policy decisions,
+// not necessarily the final emitted status after FailAs.
 func shouldAttemptFix(opts RunOptions, st Status) bool {
 	switch opts.FixMode {
 	case FixAlways:

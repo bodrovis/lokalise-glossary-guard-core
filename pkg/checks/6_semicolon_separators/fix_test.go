@@ -10,13 +10,6 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
-}
-
 func TestFixToSemicolonsIfConsistent_NoChangeIfAlreadySemicolons(t *testing.T) {
 	a := checks.Artifact{Data: []byte("a;b\n1;2\n")}
 	fr, err := fixToSemicolonsIfConsistent(context.Background(), a)
@@ -46,18 +39,11 @@ func TestFixToSemicolonsIfConsistent_CommasConverted(t *testing.T) {
 		t.Fatalf("expected DidChange=true")
 	}
 
-	out := string(fr.Data)
-	header := firstLine(out)
-
-	// header must now be semicolon-separated
-	if strings.Contains(header, ",") {
-		t.Fatalf("expected header to use semicolons, got header=%q full=%q", header, out)
-	}
-	if !strings.Contains(header, ";") {
-		t.Fatalf("expected header to contain semicolons, got %q", header)
+	want := "term;description;casesensitive\nhello;world;false\n"
+	if string(fr.Data) != want {
+		t.Fatalf("converted data mismatch\ngot:  %q\nwant: %q", string(fr.Data), want)
 	}
 
-	// fix note should mention commas -> semicolons
 	nl := strings.ToLower(fr.Note)
 	if !strings.Contains(nl, "comma") || !strings.Contains(nl, "semicolon") {
 		t.Fatalf("expected fix note to mention commas->semicolons, got %q", fr.Note)
@@ -76,14 +62,9 @@ func TestFixToSemicolonsIfConsistent_TabsConverted(t *testing.T) {
 		t.Fatalf("expected DidChange=true")
 	}
 
-	out := string(fr.Data)
-	header := firstLine(out)
-
-	if strings.Contains(header, "\t") {
-		t.Fatalf("expected header to not contain tabs after conversion, got header=%q full=%q", header, out)
-	}
-	if !strings.Contains(header, ";") {
-		t.Fatalf("expected header to contain semicolons, got %q", header)
+	want := "a;b;c\n1;2;3\n"
+	if string(fr.Data) != want {
+		t.Fatalf("converted data mismatch\ngot:  %q\nwant: %q", string(fr.Data), want)
 	}
 
 	nl := strings.ToLower(fr.Note)
@@ -193,4 +174,91 @@ func TestRunEnsureSemicolonSeparators_EndToEnd_FixesAndPasses(t *testing.T) {
 	if !strings.Contains(finalHeader, ";") {
 		t.Fatalf("expected semicolons in final header, got %q", finalHeader)
 	}
+}
+
+func TestFixToSemicolonsIfConsistent_QuotesFieldsContainingSemicolon(t *testing.T) {
+	in := "term,description,tags\nswitch,\"Also; device\",\"network;test\"\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixToSemicolonsIfConsistent(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "term;description;tags\nswitch;\"Also; device\";\"network;test\"\n"
+	if string(fr.Data) != want {
+		t.Fatalf("converted data mismatch\ngot:  %q\nwant: %q", string(fr.Data), want)
+	}
+
+	ok, err := attemptRectParse(context.Background(), fr.Data, ';')
+	if err != nil {
+		t.Fatalf("attemptRectParse returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("converted data is not valid rectangular semicolon CSV: %q", string(fr.Data))
+	}
+}
+
+func TestFixToSemicolonsIfConsistent_EscapesQuotes(t *testing.T) {
+	in := "term,description\nhello,\"say \"\"hi\"\"\"\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixToSemicolonsIfConsistent(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "term;description\nhello;\"say \"\"hi\"\"\"\n"
+	if string(fr.Data) != want {
+		t.Fatalf("converted data mismatch\ngot:  %q\nwant: %q", string(fr.Data), want)
+	}
+
+	ok, err := attemptRectParse(context.Background(), fr.Data, ';')
+	if err != nil {
+		t.Fatalf("attemptRectParse returned error: %v", err)
+	}
+	if !ok {
+		t.Fatalf("converted data is not valid rectangular semicolon CSV: %q", string(fr.Data))
+	}
+}
+func TestFixToSemicolonsIfConsistent_PreservesCRLFAndFinalNewline(t *testing.T) {
+	in := "term,description\r\nhello,world\r\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixToSemicolonsIfConsistent(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	want := "term;description\r\nhello;world\r\n"
+	if string(fr.Data) != want {
+		t.Fatalf("converted data mismatch\ngot:  %q\nwant: %q", string(fr.Data), want)
+	}
+}
+
+func TestFixToSemicolonsIfConsistent_AmbiguousRefuses(t *testing.T) {
+	in := "a,b\tc,d\ne,f\tg,h\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixToSemicolonsIfConsistent(context.Background(), a)
+	if !errors.Is(err, checks.ErrNoFix) {
+		t.Fatalf("expected ErrNoFix for ambiguous separators, got fr=%+v err=%v", fr, err)
+	}
+	if fr.DidChange {
+		t.Fatalf("should not change ambiguous input")
+	}
+	if !bytes.Equal(fr.Data, a.Data) {
+		t.Fatalf("data should be unchanged")
+	}
+}
+
+func firstLine(s string) string {
+	line, _, _ := strings.Cut(s, "\n")
+	return line
 }

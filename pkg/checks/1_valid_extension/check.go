@@ -2,7 +2,6 @@ package valid_extension
 
 import (
 	"context"
-	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -10,6 +9,8 @@ import (
 )
 
 const checkName = "ensure-valid-extension"
+
+const expectedExt = ".csv"
 
 func init() {
 	ch, err := checks.NewCheckAdapter(
@@ -40,31 +41,43 @@ func runEnsureCSV(ctx context.Context, a checks.Artifact, opts checks.RunOptions
 
 func validateCSVExt(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "validation cancelled",
+			Err: err,
+		}
 	}
 
-	base := strings.TrimSpace(a.Path)
-	if base == "" {
+	path := strings.TrimSpace(a.Path)
+	if path == "" {
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "empty path: cannot validate extension",
 		}
 	}
 
-	ext := filepath.Ext(base)
-	if strings.EqualFold(ext, ".csv") {
-		return checks.ValidationResult{OK: true, Msg: `extension is ".csv"`}
-	}
-
-	if ext == "" {
+	ext := filepath.Ext(path)
+	if strings.EqualFold(ext, expectedExt) {
 		return checks.ValidationResult{
-			OK:  false,
-			Msg: `invalid file extension: "" (expected ".csv")`,
+			OK:  true,
+			Msg: `extension is ".csv"`,
 		}
 	}
 
 	return checks.ValidationResult{
 		OK:  false,
-		Msg: fmt.Sprintf(`invalid file extension: %q (expected ".csv")`, ext),
+		Msg: invalidExtensionMessage(ext),
 	}
+}
+
+func invalidExtensionMessage(ext string) string {
+	return `invalid file extension: ` + quoteExtension(ext) + ` (expected ".csv")`
+}
+
+func quoteExtension(ext string) string {
+	if ext == "" {
+		return `""`
+	}
+
+	return `"` + ext + `"`
 }

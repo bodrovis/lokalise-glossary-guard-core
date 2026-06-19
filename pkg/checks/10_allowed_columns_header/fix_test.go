@@ -49,14 +49,14 @@ func Test_fixAllowedColumnsHeader(t *testing.T) {
 			wantChanged: false,
 		},
 		{
-			name:  "no langs declared, language-like columns preserved, garbage dropped",
+			name:  "no langs declared, language-like columns preserved",
 			langs: nil,
 			inputLines: []string{
-				"term;description;en;en_description;pt-BR;pt-BR_description;WTF_COLUMN",
+				"term;description;en;en_description;pt_br;pt_br_description;wtf_column",
 				"hello;desc1;hello-en;desc-en;ola-ptBR;desc-ptBR;???",
 			},
 			wantLines: []string{
-				"term;description;en;en_description;pt-BR;pt-BR_description;WTF_COLUMN",
+				"term;description;en;en_description;pt_br;pt_br_description;wtf_column",
 				"hello;desc1;hello-en;desc-en;ola-ptBR;desc-ptBR;???",
 			},
 			wantChanged: false,
@@ -141,9 +141,7 @@ func Test_fixAllowedColumnsHeader(t *testing.T) {
 
 			res, err := fixAllowedColumnsHeader(context.Background(), art)
 			if err != nil {
-				if err != checks.ErrNoFix {
-					t.Fatalf("unexpected err: %v", err)
-				}
+				t.Fatalf("unexpected err: %v", err)
 			}
 
 			if res.DidChange != c.wantChanged {

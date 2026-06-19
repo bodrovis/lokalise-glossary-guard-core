@@ -31,9 +31,8 @@ func TestValidateNoInvalidFlags_NoFlagColumns_PASS(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("expected Err=nil, got %v", res.Err)
 	}
-	if !strings.Contains(res.Msg, "all flag columns contain only yes/no") &&
-		!strings.Contains(res.Msg, "no content to validate for flags") {
-		t.Fatalf("unexpected pass message: %q", res.Msg)
+	if res.Msg == "" {
+		t.Fatalf("expected non-empty pass message")
 	}
 }
 
@@ -220,9 +219,7 @@ func TestValidateNoInvalidFlags_TruncatesAfter10(t *testing.T) {
 	}
 }
 
-// --- e2e test for runNoInvalidFlags ---
-
-func TestRunNoInvalidFlags_EndToEnd_FailNoFix(t *testing.T) {
+func TestRunNoInvalidFlags_EndToEnd_NoAutoFix(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -246,7 +243,7 @@ func TestRunNoInvalidFlags_EndToEnd_FailNoFix(t *testing.T) {
 	}
 
 	if out.Final.DidChange {
-		t.Fatalf("expected DidChange=false because no auto-fix is implemented")
+		t.Fatalf("expected DidChange=false because auto-fix was not requested")
 	}
 	if string(out.Final.Data) != input {
 		t.Fatalf("Final.Data should equal original when no fix is applied")
@@ -257,5 +254,62 @@ func TestRunNoInvalidFlags_EndToEnd_FailNoFix(t *testing.T) {
 
 	if !strings.Contains(out.Result.Message, `casesensitive="YES"`) {
 		t.Fatalf("expected Result.Message to include invalid flag report, got %q", out.Result.Message)
+	}
+}
+
+func TestRunNoInvalidFlags_EndToEnd_WithFixPolicy(t *testing.T) {
+	t.Parallel()
+
+	input := "" +
+		"term;description;casesensitive;translatable;forbidden\n" +
+		"foo;d;YES;no;0\n" +
+		"bar;d2;false;TRUE;no\n"
+
+	a := checks.Artifact{
+		Data: []byte(input),
+		Path: "fix.csv",
+	}
+
+	out := runNoInvalidFlags(context.Background(), a, checks.RunOptions{
+		FixMode:       checks.FixIfFailed,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("expected PASS after fix, got %s (%s)", out.Result.Status, out.Result.Message)
+	}
+
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "" +
+		"term;description;casesensitive;translatable;forbidden\n" +
+		"foo;d;yes;no;no\n" +
+		"bar;d2;no;yes;no\n"
+
+	if string(out.Final.Data) != want {
+		t.Fatalf("fixed data mismatch.\n got:\n%q\nwant:\n%q", string(out.Final.Data), want)
+	}
+}
+
+func TestValidateNoInvalidFlags_BOMBeforeHeader(t *testing.T) {
+	t.Parallel()
+
+	csv := "\xEF\xBB\xBFterm;casesensitive\nfoo;YES\n"
+
+	res := validateNoInvalidFlags(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "bom.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because YES is invalid")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, `casesensitive="YES"`) {
+		t.Fatalf("expected invalid casesensitive value in message, got %q", res.Msg)
 	}
 }

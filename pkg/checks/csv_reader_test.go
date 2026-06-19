@@ -168,3 +168,29 @@ func TestNewSemicolonCSVReaderWithCtx_ReturnsConfiguredReader(t *testing.T) {
 		t.Fatalf("LazyQuotes=false, want true")
 	}
 }
+
+func TestNewCSVReader_ConfiguresReader(t *testing.T) {
+	t.Parallel()
+
+	r := checks.NewCSVReader([]byte("a,b\nc,d"), ',')
+
+	if r.Comma != ',' {
+		t.Fatalf("Comma = %q, want ','", r.Comma)
+	}
+	if r.FieldsPerRecord != -1 {
+		t.Fatalf("FieldsPerRecord = %d, want -1", r.FieldsPerRecord)
+	}
+	if !r.LazyQuotes {
+		t.Fatalf("LazyQuotes=false, want true")
+	}
+}
+
+func TestNewSemicolonCSVReader_UsesSemicolonDelimiter(t *testing.T) {
+	t.Parallel()
+
+	r := checks.NewSemicolonCSVReader([]byte("a;b\nc;d"))
+
+	if r.Comma != ';' {
+		t.Fatalf("Comma = %q, want ';'", r.Comma)
+	}
+}

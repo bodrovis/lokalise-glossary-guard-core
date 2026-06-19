@@ -337,3 +337,51 @@ func TestRunNoForbiddenNonTranslatableTerms_EndToEnd_FailNoFix(t *testing.T) {
 		t.Fatalf("expected Result.Message to include row number, got %q", out.Result.Message)
 	}
 }
+
+func TestValidateNoForbiddenNonTranslatableTerms_BOMBeforeHeader(t *testing.T) {
+	t.Parallel()
+
+	csv := "\xEF\xBB\xBFterm;description;translatable;forbidden\n" +
+		"foo;desc;no;yes\n"
+
+	res := validateNoForbiddenNonTranslatableTerms(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "bom.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because foo is forbidden and non-translatable")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, `term="foo"`) {
+		t.Fatalf("expected message to include term=\"foo\", got %q", res.Msg)
+	}
+}
+
+func TestValidateNoForbiddenNonTranslatableTerms_NoTermColumn_ReportsRowOnly(t *testing.T) {
+	t.Parallel()
+
+	csv := "" +
+		"description;translatable;forbidden\n" +
+		"desc;no;yes\n"
+
+	res := validateNoForbiddenNonTranslatableTerms(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "noterm.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because row is forbidden and non-translatable")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if strings.Contains(res.Msg, `term=`) {
+		t.Fatalf("did not expect term= in message when term column is missing, got %q", res.Msg)
+	}
+	if !strings.Contains(res.Msg, "(row 2)") {
+		t.Fatalf("expected row number in message, got %q", res.Msg)
+	}
+}

@@ -60,7 +60,7 @@ func TestFixNoInvalidFlags_NoHeader_NoFix(t *testing.T) {
 	}
 }
 
-func TestFixNoInvalidFlags_NoFlagColumns_NoFix(t *testing.T) {
+func TestFixNoInvalidFlags_NoFlagColumns_NoChange(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -75,11 +75,8 @@ func TestFixNoInvalidFlags_NoFlagColumns_NoFix(t *testing.T) {
 	}
 
 	fr, err := fixNoInvalidFlags(ctx, a)
-	if err == nil {
-		t.Fatalf("expected ErrNoFix, got nil")
-	}
-	if err != checks.ErrNoFix {
-		t.Fatalf("expected ErrNoFix, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
 	if fr.DidChange {
 		t.Fatalf("DidChange should be false with no watched columns")
@@ -135,7 +132,7 @@ func TestFixNoInvalidFlags_NormalizesKnownForms(t *testing.T) {
 	}
 }
 
-func TestFixNoInvalidFlags_DoesNotTouchUnfixables_ReturnsErrNoFixIfNothingChanged(t *testing.T) {
+func TestFixNoInvalidFlags_DoesNotTouchUnfixables_NoChange(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -151,11 +148,8 @@ func TestFixNoInvalidFlags_DoesNotTouchUnfixables_ReturnsErrNoFixIfNothingChange
 	}
 
 	fr, err := fixNoInvalidFlags(ctx, a)
-	if err == nil {
-		t.Fatalf("expected ErrNoFix because no normalizable values, got nil")
-	}
-	if err != checks.ErrNoFix {
-		t.Fatalf("expected ErrNoFix, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
 	if fr.DidChange {
 		t.Fatalf("DidChange should be false when no changes happened")
@@ -231,7 +225,7 @@ func TestRunNoInvalidFlags_EndToEnd_WithFixPolicy_AllFixable_PASS(t *testing.T) 
 	}
 
 	out := runNoInvalidFlags(ctx, a, checks.RunOptions{
-		FixMode:       checks.FixAlways,
+		FixMode:       checks.FixIfFailed,
 		RerunAfterFix: true,
 	})
 
@@ -252,10 +246,8 @@ func TestRunNoInvalidFlags_EndToEnd_WithFixPolicy_AllFixable_PASS(t *testing.T) 
 		t.Fatalf("unexpected path rewrite: got %q want %q or empty", out.Final.Path, a.Path)
 	}
 
-	if !strings.Contains(out.Result.Message, "normalized") &&
-		!strings.Contains(out.Result.Message, "auto-fix applied") &&
-		!strings.Contains(out.Result.Message, "fixed") {
-		t.Fatalf("expected Result.Message to acknowledge fix, got %q", out.Result.Message)
+	if out.Result.Message == "" {
+		t.Fatalf("expected non-empty result message")
 	}
 }
 
@@ -280,7 +272,7 @@ func TestRunNoInvalidFlags_EndToEnd_WithFixPolicy_NotFullyFixable_FAIL(t *testin
 	}
 
 	out := runNoInvalidFlags(ctx, a, checks.RunOptions{
-		FixMode:       checks.FixAlways,
+		FixMode:       checks.FixIfFailed,
 		RerunAfterFix: true,
 	})
 

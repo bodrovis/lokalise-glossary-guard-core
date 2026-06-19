@@ -59,7 +59,7 @@ func TestFixLowercaseHeader(t *testing.T) {
 			t.Fatalf("expected body rows to remain intact, got: %q", out)
 		}
 
-		if !strings.Contains(strings.ToLower(fr.Note), "normalized service columns in header to lowercase") {
+		if !strings.Contains(fr.Note, "normalized service columns in header to lowercase") {
 			t.Fatalf("expected note about normalization, got %q", fr.Note)
 		}
 	})
@@ -79,4 +79,93 @@ func TestFixLowercaseHeader(t *testing.T) {
 			t.Fatalf("expected data to remain identical on no-fix case")
 		}
 	})
+}
+
+func TestFixLowercaseHeader_LeavesUnknownHeadersUnchanged(t *testing.T) {
+	in := "Term;CUSTOM_HEADER;Description\nx;y;z\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixLowercaseHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "term;CUSTOM_HEADER;description\nx;y;z\n"
+	if got := string(fr.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestFixLowercaseHeader_PreservesBOMCRLFAndFinalNewline(t *testing.T) {
+	const bom = "\xEF\xBB\xBF"
+
+	in := bom + "Term;Description;caseSensitive\r\nrow;val;no\r\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixLowercaseHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := bom + "term;description;casesensitive\r\nrow;val;no\r\n"
+	if got := string(fr.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestFixLowercaseHeader_PreservesNoFinalNewline(t *testing.T) {
+	in := "Term;Description;caseSensitive"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixLowercaseHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "term;description;casesensitive"
+	if got := string(fr.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestFixLowercaseHeader_PreservesLeadingBlankLines(t *testing.T) {
+	in := "\n  \nTerm;Description;caseSensitive\nrow;val;no\n"
+	a := checks.Artifact{Data: []byte(in)}
+
+	fr, err := fixLowercaseHeader(context.Background(), a)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if !fr.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "\n  \nterm;description;casesensitive\nrow;val;no\n"
+	if got := string(fr.Data); got != want {
+		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestFixLowercaseHeader_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	a := checks.Artifact{Data: []byte("Term;Description\nx;y\n")}
+
+	fr, err := fixLowercaseHeader(ctx, a)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got fr=%+v err=%v", fr, err)
+	}
+	if fr.DidChange {
+		t.Fatalf("expected DidChange=false")
+	}
 }

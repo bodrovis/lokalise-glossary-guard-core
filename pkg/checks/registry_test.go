@@ -223,13 +223,20 @@ func TestList_ReturnsCopy(t *testing.T) {
 	_, _ = checks.Register(mkCheck(t, "b", checks.Pass, ""))
 
 	l1 := checks.List()
-	l1 = append(l1, nil)
+	if len(l1) != 2 {
+		t.Fatalf("precondition: len=%d, want 2", len(l1))
+	}
 
-	if got := len(checks.List()); got != 2 {
+	l1[0] = nil
+
+	l2 := checks.List()
+	if got := len(l2); got != 2 {
 		t.Fatalf("List aliased registry; len=%d", got)
 	}
-	if got1 := len(l1); got1 != 3 {
-		t.Fatalf("List aliased registry; len=%d", got1)
+	for _, c := range l2 {
+		if c == nil {
+			t.Fatalf("nil element leaked from List snapshot mutation")
+		}
 	}
 }
 
@@ -269,6 +276,32 @@ func TestRegister_ReplacesByTrimmedCaseInsensitiveName(t *testing.T) {
 	}
 	if !c.FailFast() {
 		t.Fatalf("FailFast=false, want true")
+	}
+}
+
+func TestRegister_RejectsNilCheck(t *testing.T) {
+	checks.Reset()
+	t.Cleanup(checks.Reset)
+
+	replaced, err := checks.Register(nil)
+	if err == nil {
+		t.Fatalf("expected error for nil check")
+	}
+	if replaced {
+		t.Fatalf("replaced=true, want false")
+	}
+}
+
+func TestRegister_RejectsEmptyNormalizedName(t *testing.T) {
+	checks.Reset()
+	t.Cleanup(checks.Reset)
+
+	replaced, err := checks.Register(fakeRegistryCheck{name: "   "})
+	if err == nil {
+		t.Fatalf("expected error for empty normalized name")
+	}
+	if replaced {
+		t.Fatalf("replaced=true, want false")
 	}
 }
 

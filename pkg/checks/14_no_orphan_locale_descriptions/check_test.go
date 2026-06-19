@@ -171,7 +171,7 @@ func TestValidateWarnOrphanLocaleDescriptions_ManyOrphans_Truncate(t *testing.T)
 
 // --- e2e test for runWarnOrphanLocaleDescriptions ---
 
-func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WarnNoFix(t *testing.T) {
+func TestRunWarnOrphanLocaleDescriptions_EndToEnd_NoAutoFix(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -195,7 +195,7 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WarnNoFix(t *testing.T) {
 	}
 
 	if out.Final.DidChange {
-		t.Fatalf("expected DidChange=false because no fixer is provided")
+		t.Fatalf("expected DidChange=false because auto-fix was not requested")
 	}
 	if string(out.Final.Data) != input {
 		t.Fatalf("Final.Data must remain unchanged when no fix is applied")
@@ -209,5 +209,47 @@ func TestRunWarnOrphanLocaleDescriptions_EndToEnd_WarnNoFix(t *testing.T) {
 	}
 	if !strings.Contains(out.Result.Message, "en") {
 		t.Fatalf("expected message to mention missing base locale, got: %q", out.Result.Message)
+	}
+}
+
+func TestValidateWarnOrphanLocaleDescriptions_BOMBeforeHeader(t *testing.T) {
+	t.Parallel()
+
+	csv := "\xEF\xBB\xBFterm;description;en_description\nhello;desc;english desc\n"
+
+	res := validateWarnOrphanLocaleDescriptions(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "bom.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because en_description is orphan")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, "en") {
+		t.Fatalf("expected message to mention en, got %q", res.Msg)
+	}
+}
+
+func TestValidateWarnOrphanLocaleDescriptions_SkipsBlankLinesBeforeHeader(t *testing.T) {
+	t.Parallel()
+
+	csv := "\n  \nterm;description;en_description\nhello;desc;english desc\n"
+
+	res := validateWarnOrphanLocaleDescriptions(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "blank_prefix.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because en_description is orphan")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, "en") {
+		t.Fatalf("expected message to mention en, got %q", res.Msg)
 	}
 }

@@ -9,6 +9,11 @@ import (
 
 const checkName = "ensure-term-description-header"
 
+type termDescriptionReport struct {
+	ok      bool
+	message string
+}
+
 func init() {
 	ch, err := checks.NewCheckAdapter(
 		checkName,
@@ -38,67 +43,139 @@ func runEnsureTermDescriptionHeader(ctx context.Context, a checks.Artifact, opts
 }
 
 func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
-		ctx,
-		a,
-		"cannot check header: no usable content",
-	)
+	header, res, ok := readFirstNonBlankHeader(ctx, a)
 	if !ok {
 		return res
 	}
 
-	var header []string
+	if len(header) < 2 {
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "header has fewer than two columns; expected at least term;description",
+		}
+	}
+
+	report := inspectTermDescriptionHeader(header)
+	if report.ok {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "header starts with term;description",
+		}
+	}
+
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: report.message,
+	}
+}
+
+func readFirstNonBlankHeader(
+	ctx context.Context,
+	a checks.Artifact,
+) ([]string, checks.ValidationResult, bool) {
+	data := checks.StripUTF8BOM(a.Data)
+
+	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
+		ctx,
+		checks.Artifact{
+			Data:  data,
+			Path:  a.Path,
+			Langs: a.Langs,
+		},
+		"cannot check header: no usable content",
+	)
+	if !ok {
+		return nil, res, false
+	}
+
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, cancelledValidation(err), false
+		}
+
 		rec, err := r.Read()
 		if err != nil {
-			if ctx.Err() != nil {
-				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, cancelledValidation(ctxErr), false
 			}
-			return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
+
+			return nil, checks.ValidationResult{
+				OK:  false,
+				Msg: "cannot parse header with semicolon delimiter",
+				Err: err,
+			}, false
 		}
 
-		nonEmpty := false
-		for _, c := range rec {
-			if strings.TrimSpace(c) != "" {
-				nonEmpty = true
-				break
-			}
-		}
-		if nonEmpty {
-			header = rec
-			break
+		if !isBlankCSVRecord(rec) {
+			return rec, checks.ValidationResult{}, true
 		}
 	}
+}
 
-	if len(header) < 2 {
-		return checks.ValidationResult{OK: false, Msg: "header has fewer than two columns; expected at least term;description"}
-	}
+func inspectTermDescriptionHeader(header []string) termDescriptionReport {
+	first := normalizeHeaderCell(header[0])
+	second := normalizeHeaderCell(header[1])
 
-	first := strings.ToLower(strings.TrimSpace(header[0]))
-	second := strings.ToLower(strings.TrimSpace(header[1]))
 	if first == "term" && second == "description" {
-		return checks.ValidationResult{OK: true, Msg: "header starts with term;description"}
+		return termDescriptionReport{ok: true}
 	}
 
-	hasTerm, hasDesc := false, false
-	for _, c := range header {
-		cc := strings.ToLower(strings.TrimSpace(c))
-		switch cc {
+	hasTerm, hasDescription := hasRequiredHeaderColumns(header)
+
+	switch {
+	case hasTerm && hasDescription:
+		return termDescriptionReport{
+			message: "header contains term and description but not in required order or not at the start",
+		}
+	case hasTerm && !hasDescription:
+		return termDescriptionReport{
+			message: "header contains term but missing description column",
+		}
+	case !hasTerm && hasDescription:
+		return termDescriptionReport{
+			message: "header contains description but missing term column",
+		}
+	default:
+		return termDescriptionReport{
+			message: "header missing both term and description columns",
+		}
+	}
+}
+
+func hasRequiredHeaderColumns(header []string) (bool, bool) {
+	hasTerm := false
+	hasDescription := false
+
+	for _, col := range header {
+		switch normalizeHeaderCell(col) {
 		case "term":
 			hasTerm = true
 		case "description":
-			hasDesc = true
+			hasDescription = true
 		}
 	}
 
-	switch {
-	case hasTerm && hasDesc:
-		return checks.ValidationResult{OK: false, Msg: "header contains term and description but not in required order or not at the start"}
-	case hasTerm && !hasDesc:
-		return checks.ValidationResult{OK: false, Msg: "header contains term but missing description column"}
-	case !hasTerm && hasDesc:
-		return checks.ValidationResult{OK: false, Msg: "header contains description but missing term column"}
-	default:
-		return checks.ValidationResult{OK: false, Msg: "header missing both term and description columns"}
+	return hasTerm, hasDescription
+}
+
+func normalizeHeaderCell(col string) string {
+	return strings.ToLower(strings.TrimSpace(col))
+}
+
+func isBlankCSVRecord(record []string) bool {
+	for _, col := range record {
+		if !checks.IsBlankUnicode([]byte(col)) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
 	}
 }

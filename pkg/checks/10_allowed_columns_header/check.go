@@ -1,10 +1,7 @@
 package allowed_columns_header
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/csv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -42,152 +39,338 @@ func runEnsureAllowedColumnsHeader(ctx context.Context, a checks.Artifact, opts 
 
 func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return cancelledValidation(err)
 	}
 
-	if len(bytes.TrimSpace(a.Data)) == 0 {
-		return checks.ValidationResult{OK: false, Msg: "cannot check header: no usable content"}
+	data := checks.StripUTF8BOM(a.Data)
+	if checks.IsBlankUnicode(data) {
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "cannot check header: no usable content",
+		}
 	}
 
-	br := bufio.NewReader(bytes.NewReader(a.Data))
-	r := csv.NewReader(br)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
+	header, res, ok := readAllowedColumnsHeader(ctx, data)
+	if !ok {
+		return res
+	}
 
-	var cols []string
+	report, err := inspectAllowedColumns(ctx, header, a.Langs)
+	if err != nil {
+		return cancelledValidation(err)
+	}
+
+	return allowedColumnsValidationResult(report)
+}
+
+func readAllowedColumnsHeader(
+	ctx context.Context,
+	data []byte,
+) ([]string, checks.ValidationResult, bool) {
+	r := checks.NewSemicolonCSVReader(data)
+
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, cancelledValidation(err), false
+		}
+
 		rec, err := r.Read()
-		if err != nil || rec == nil {
-			if ctx.Err() != nil {
-				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, cancelledValidation(ctxErr), false
 			}
-			return checks.ValidationResult{OK: false, Msg: "cannot parse header with semicolon delimiter", Err: err}
+
+			return nil, checks.ValidationResult{
+				OK:  false,
+				Msg: "cannot parse header with semicolon delimiter",
+				Err: err,
+			}, false
 		}
-		nonEmpty := false
-		for _, c := range rec {
-			if strings.TrimSpace(c) != "" {
-				nonEmpty = true
-				break
-			}
+
+		if !isBlankCSVRecord(rec) {
+			return rec, checks.ValidationResult{}, true
 		}
-		if nonEmpty {
-			cols = rec
-			break
+	}
+}
+
+func isBlankCSVRecord(record []string) bool {
+	for _, col := range record {
+		if !checks.IsBlankUnicode([]byte(col)) {
+			return false
 		}
 	}
 
-	allowedLangsNorm := map[string]struct{}{}
-	for _, l := range a.Langs {
-		allowedLangsNorm[strings.ToLower(strings.TrimSpace(l))] = struct{}{}
-	}
-	hasAllowed := len(allowedLangsNorm) > 0
+	return true
+}
 
-	var unknownCols []string
-	var unexpectedLangs []string
-	var missingLangs []string
-	var detectedLangsNoConfig []string
-	seenLang := map[string]bool{}
+type allowedColumnsReport struct {
+	hasAllowedConfig      bool
+	unknownCols           []string
+	unexpectedLangs       []string
+	missingLangColumns    []string
+	detectedLangsNoConfig []string
+}
+
+type allowedLanguages struct {
+	keys []string
+	set  map[string]string
+}
+
+func newAllowedLanguages(langs []string) allowedLanguages {
+	out := allowedLanguages{
+		set: make(map[string]string, len(langs)),
+	}
+
+	for _, lang := range langs {
+		key := normalizeLangKey(lang)
+		if key == "" {
+			continue
+		}
+
+		if _, exists := out.set[key]; exists {
+			continue
+		}
+
+		out.keys = append(out.keys, key)
+		out.set[key] = key
+	}
+
+	return out
+}
+
+func (l allowedLanguages) hasAny() bool {
+	return len(l.keys) > 0
+}
+
+type languagePresence struct {
+	value       bool
+	description bool
+}
+
+func inspectAllowedColumns(
+	ctx context.Context,
+	cols []string,
+	langs []string,
+) (allowedColumnsReport, error) {
+	allowed := newAllowedLanguages(langs)
+
+	report := allowedColumnsReport{
+		hasAllowedConfig: allowed.hasAny(),
+	}
+
+	seen := make(map[string]languagePresence, len(allowed.keys))
 
 	for _, col := range cols {
 		if err := ctx.Err(); err != nil {
-			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
-		}
-		colTrim := strings.TrimSpace(col)
-		if colTrim == "" {
-			continue
-		}
-		colLower := strings.ToLower(colTrim)
-
-		if _, ok := checks.KnownHeaders[colLower]; ok {
-			continue
+			return allowedColumnsReport{}, err
 		}
 
-		langBase, isLangLike := parseLangColumn(colTrim)
+		inspectAllowedColumn(&report, seen, allowed, col)
+	}
 
-		if hasAllowed {
-			if isLangLike {
-				langKeyNorm := strings.ToLower(langBase)
-				if _, ok := allowedLangsNorm[langKeyNorm]; ok {
-					seenLang[langKeyNorm] = true
-					continue
+	if allowed.hasAny() {
+		report.missingLangColumns = missingDeclaredLanguageColumns(allowed, seen)
+	}
+
+	return report, nil
+}
+
+func inspectAllowedColumn(
+	report *allowedColumnsReport,
+	seen map[string]languagePresence,
+	allowed allowedLanguages,
+	col string,
+) {
+	colTrim := strings.TrimSpace(col)
+	if colTrim == "" {
+		return
+	}
+
+	colLower := strings.ToLower(colTrim)
+	if _, ok := checks.KnownHeaders[colLower]; ok {
+		return
+	}
+
+	langCol, isLangLike := parseLangColumn(colTrim)
+
+	if allowed.hasAny() {
+		if isLangLike {
+			if _, ok := allowed.set[langCol.key]; ok {
+				p := seen[langCol.key]
+				if langCol.description {
+					p.description = true
+				} else {
+					p.value = true
 				}
-				unexpectedLangs = appendIfMissing(unexpectedLangs, langBase)
-				continue
+				seen[langCol.key] = p
+				return
 			}
-			unknownCols = appendIfMissing(unknownCols, colTrim)
-		} else {
-			if isLangLike {
-				detectedLangsNoConfig = appendIfMissing(detectedLangsNoConfig, langBase)
-				continue
-			}
-			unknownCols = appendIfMissing(unknownCols, colTrim)
+
+			report.unexpectedLangs = appendLangIfMissing(report.unexpectedLangs, langCol.base)
+			return
+		}
+
+		report.unknownCols = appendStringIfMissingFold(report.unknownCols, colTrim)
+		return
+	}
+
+	if isLangLike {
+		report.detectedLangsNoConfig = appendLangIfMissing(report.detectedLangsNoConfig, langCol.base)
+		return
+	}
+
+	report.unknownCols = appendStringIfMissingFold(report.unknownCols, colTrim)
+}
+
+type parsedLangColumn struct {
+	base        string
+	key         string
+	description bool
+}
+
+func parseLangColumn(col string) (parsedLangColumn, bool) {
+	col = strings.TrimSpace(col)
+	if col == "" {
+		return parsedLangColumn{}, false
+	}
+
+	colLower := strings.ToLower(col)
+
+	if strings.HasSuffix(colLower, "_description") {
+		base := col[:len(col)-len("_description")]
+		if !looksLikeLangCode(base) {
+			return parsedLangColumn{}, false
+		}
+
+		return parsedLangColumn{
+			base:        base,
+			key:         normalizeLangKey(base),
+			description: true,
+		}, true
+	}
+
+	if looksLikeLangCode(col) {
+		return parsedLangColumn{
+			base: col,
+			key:  normalizeLangKey(col),
+		}, true
+	}
+
+	return parsedLangColumn{}, false
+}
+
+func normalizeLangKey(lang string) string {
+	lang = strings.TrimSpace(lang)
+	if lang == "" {
+		return ""
+	}
+
+	lang = strings.ReplaceAll(lang, "-", "_")
+	return strings.ToLower(lang)
+}
+
+func missingDeclaredLanguageColumns(
+	allowed allowedLanguages,
+	seen map[string]languagePresence,
+) []string {
+	var missing []string
+
+	for _, key := range allowed.keys {
+		p := seen[key]
+
+		if !p.value {
+			missing = append(missing, key)
+		}
+
+		if !p.description {
+			missing = append(missing, key+"_description")
 		}
 	}
 
-	if hasAllowed {
-		for langNorm := range allowedLangsNorm {
-			if !seenLang[langNorm] {
-				missingLangs = appendIfMissing(missingLangs, langNorm)
-			}
+	return missing
+}
+
+func allowedColumnsValidationResult(report allowedColumnsReport) checks.ValidationResult {
+	if len(report.unknownCols) > 0 {
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "header has unknown columns: " + strings.Join(report.unknownCols, ", "),
 		}
 	}
 
-	if len(unknownCols) > 0 {
-		return checks.ValidationResult{OK: false, Msg: "header has unknown columns: " + strings.Join(unknownCols, ", ")}
-	}
-	if hasAllowed && (len(unexpectedLangs) > 0 || len(missingLangs) > 0) {
+	if report.hasAllowedConfig &&
+		(len(report.unexpectedLangs) > 0 || len(report.missingLangColumns) > 0) {
 		var parts []string
-		if len(unexpectedLangs) > 0 {
-			parts = append(parts, "header has columns for undeclared languages: "+strings.Join(unexpectedLangs, ", "))
+
+		if len(report.unexpectedLangs) > 0 {
+			parts = append(parts,
+				"header has columns for undeclared languages: "+strings.Join(report.unexpectedLangs, ", "),
+			)
 		}
-		if len(missingLangs) > 0 {
-			parts = append(parts, "header is missing columns for declared languages: "+strings.Join(missingLangs, ", "))
+
+		if len(report.missingLangColumns) > 0 {
+			parts = append(parts,
+				"header is missing columns for declared languages: "+strings.Join(report.missingLangColumns, ", "),
+			)
 		}
-		return checks.ValidationResult{OK: false, Msg: strings.Join(parts, " ; ")}
+
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: strings.Join(parts, " ; "),
+		}
 	}
-	if !hasAllowed && len(detectedLangsNoConfig) > 0 {
+
+	if !report.hasAllowedConfig && len(report.detectedLangsNoConfig) > 0 {
 		return checks.ValidationResult{
 			OK: true,
-			Msg: "header columns look like languages: " + strings.Join(detectedLangsNoConfig, ", ") +
+			Msg: "header columns look like languages: " + strings.Join(report.detectedLangsNoConfig, ", ") +
 				" (no declared language list, skipped strict validation)",
 		}
 	}
 
-	return checks.ValidationResult{OK: true, Msg: "header columns are allowed"}
+	return checks.ValidationResult{
+		OK:  true,
+		Msg: "header columns are allowed",
+	}
 }
 
-func parseLangColumn(col string) (langBase string, isLangLike bool) {
-	if strings.HasSuffix(col, "_description") {
-		base := strings.TrimSuffix(col, "_description")
-		if looksLikeLangCode(base) {
-			return base, true
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
+}
+
+func appendLangIfMissing(sl []string, lang string) []string {
+	key := normalizeLangKey(lang)
+
+	for _, existing := range sl {
+		if normalizeLangKey(existing) == key {
+			return sl
 		}
-		return "", false
 	}
 
-	if looksLikeLangCode(col) {
-		return col, true
-	}
-
-	return "", false
+	return append(sl, lang)
 }
 
-// Supported locales:
-//
-//	en
-//	fr
-//	de
-//	en_US
-//	pt-BR
-//	zh_Hans_CN
-//
-// and so on.
+func appendStringIfMissingFold(sl []string, v string) []string {
+	vLower := strings.ToLower(v)
+
+	for _, existing := range sl {
+		if strings.ToLower(existing) == vLower {
+			return sl
+		}
+	}
+
+	return append(sl, v)
+}
+
 func looksLikeLangCode(s string) bool {
 	if s == "" {
 		return false
 	}
-	// treat "-" same as "_"
+
 	s = strings.ReplaceAll(s, "-", "_")
 
 	parts := strings.Split(s, "_")
@@ -199,8 +382,9 @@ func looksLikeLangCode(s string) bool {
 	if len(first) < 2 || len(first) > 3 {
 		return false
 	}
+
 	for _, r := range first {
-		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+		if !isASCIILetter(r) {
 			return false
 		}
 	}
@@ -209,10 +393,9 @@ func looksLikeLangCode(s string) bool {
 		if seg == "" {
 			return false
 		}
+
 		for _, r := range seg {
-			if (r < 'a' || r > 'z') &&
-				(r < 'A' || r > 'Z') &&
-				(r < '0' || r > '9') {
+			if !isASCIILetter(r) && !isASCIIDigit(r) {
 				return false
 			}
 		}
@@ -221,12 +404,10 @@ func looksLikeLangCode(s string) bool {
 	return true
 }
 
-func appendIfMissing(sl []string, v string) []string {
-	vLower := strings.ToLower(v)
-	for _, x := range sl {
-		if strings.ToLower(x) == vLower {
-			return sl
-		}
-	}
-	return append(sl, v)
+func isASCIILetter(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+}
+
+func isASCIIDigit(r rune) bool {
+	return r >= '0' && r <= '9'
 }

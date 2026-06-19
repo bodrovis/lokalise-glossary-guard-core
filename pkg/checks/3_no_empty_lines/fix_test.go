@@ -29,8 +29,8 @@ func TestFixRemoveEmptyLines_LF_Basics(t *testing.T) {
 		t.Fatalf("DidChange=false, expected true")
 	}
 	// With 2 dropped lines we expect plural note
-	if fr.Note != "removed empty lines" {
-		t.Fatalf("Note=%q, want %q", fr.Note, "removed empty lines")
+	if fr.Note != "removed 2 empty lines" {
+		t.Fatalf("Note=%q, want %q", fr.Note, "removed 2 empty lines")
 	}
 }
 
@@ -159,7 +159,7 @@ func TestFixRemoveEmptyLines_TrailingNewlineBehavior(t *testing.T) {
 	if !fr.DidChange {
 		t.Fatalf("DidChange=false, expected true")
 	}
-	if fr.Note != "removed empty lines" && fr.Note != "removed 1 empty line" {
+	if fr.Note != "removed 2 empty lines" && fr.Note != "removed 1 empty line" {
 		t.Fatalf("unexpected Note: %q", fr.Note)
 	}
 }
@@ -271,5 +271,33 @@ func TestFixRemoveEmptyLines_SingleLine_NoFinalNewlineInput(t *testing.T) {
 
 	if string(fr.Data) != "only" {
 		t.Fatalf("unexpected change: %q", string(fr.Data))
+	}
+}
+
+func Test_emptyLinesRemovedNote(t *testing.T) {
+	tests := []struct {
+		name    string
+		dropped int
+		want    string
+	}{
+		{
+			name:    "one",
+			dropped: 1,
+			want:    "removed 1 empty line",
+		},
+		{
+			name:    "many",
+			dropped: 3,
+			want:    "removed 3 empty lines",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := emptyLinesRemovedNote(tt.dropped)
+			if got != tt.want {
+				t.Fatalf("emptyLinesRemovedNote(%d) = %q, want %q", tt.dropped, got, tt.want)
+			}
+		})
 	}
 }

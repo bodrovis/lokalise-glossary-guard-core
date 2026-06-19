@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
@@ -13,81 +14,31 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		return checks.FixResult{}, err
 	}
 
-	in := a.Data
-	if len(in) == 0 {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "no usable content to trim header"}, checks.ErrNoFix
+	in, bom := checks.SplitUTF8BOM(a.Data)
+	if checks.IsBlankUnicode(in) {
+		return noHeaderTrimFix(a, "no usable content to trim header"), checks.ErrNoFix
 	}
 
-	// preserve BOM + line ending + final NL
-	bom := []byte{}
-	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
-		bom, in = []byte{0xEF, 0xBB, 0xBF}, in[3:]
-	}
 	lineSep := checks.DetectLineEnding(in)
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
-	firstLineEnd := bytes.IndexByte(in, '\n')
-	var headerLine []byte
-	var rest []byte
-	switch firstLineEnd {
-	case -1:
-		headerLine = in
-		rest = nil
-	default:
-		headerLine = in[:firstLineEnd]
-		rest = in[firstLineEnd+1:]
-		if len(headerLine) > 0 && headerLine[len(headerLine)-1] == '\r' {
-			headerLine = headerLine[:len(headerLine)-1]
-		}
-	}
+	headerLine, rest := splitFirstLine(in)
 
-	r := csv.NewReader(bytes.NewReader(headerLine))
-	r.Comma = ';'
-	r.LazyQuotes = true
-	r.FieldsPerRecord = -1
-
-	record, err := r.Read()
+	record, err := readHeaderForFix(headerLine)
 	if err != nil {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "cannot parse header; skip"}, checks.ErrNoFix
+		return noHeaderTrimFix(a, "cannot parse header; skip"), checks.ErrNoFix
 	}
 
-	changed := false
-	for i, v := range record {
-		trim := bytes.TrimSpace([]byte(v))
-		if !bytes.Equal([]byte(v), trim) {
-			record[i] = string(trim)
-			changed = true
-		}
-	}
-	if !changed {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "header already trimmed"}, nil
+	if !trimHeaderRecord(record) {
+		return noHeaderTrimFix(a, "header already trimmed"), nil
 	}
 
-	var hb bytes.Buffer
-	w := csv.NewWriter(&hb)
-	w.Comma = ';'
-	if err := w.Write(record); err != nil {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to write trimmed header: " + err.Error()}, err
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to flush header: " + err.Error()}, err
+	newHeader, err := writeHeaderRecord(record, lineSep, !keepFinal && len(rest) == 0)
+	if err != nil {
+		return noHeaderTrimFix(a, "failed to write trimmed header: "+err.Error()), err
 	}
 
-	newHeader := hb.Bytes()
-	if lineSep == "\r\n" {
-		newHeader = bytes.ReplaceAll(newHeader, []byte("\n"), []byte("\r\n"))
-	}
-
-	if !keepFinal && len(rest) == 0 {
-		if lineSep == "\r\n" && bytes.HasSuffix(newHeader, []byte("\r\n")) {
-			newHeader = newHeader[:len(newHeader)-2]
-		} else if lineSep == "\n" && bytes.HasSuffix(newHeader, []byte("\n")) {
-			newHeader = newHeader[:len(newHeader)-1]
-		}
-	}
-
-	out := make([]byte, 0, len(bom)+len(newHeader)+len(rest)+2)
+	out := make([]byte, 0, len(bom)+len(newHeader)+len(rest))
 	out = append(out, bom...)
 	out = append(out, newHeader...)
 	out = append(out, rest...)
@@ -102,4 +53,84 @@ func fixNoSpacesInHeader(ctx context.Context, a checks.Artifact) (checks.FixResu
 		DidChange: true,
 		Note:      "trimmed leading/trailing spaces in header cells",
 	}, nil
+}
+
+func splitFirstLine(data []byte) ([]byte, []byte) {
+	headerLine, rest, found := bytes.Cut(data, []byte("\n"))
+	if !found {
+		return data, nil
+	}
+
+	if len(headerLine) > 0 && headerLine[len(headerLine)-1] == '\r' {
+		headerLine = headerLine[:len(headerLine)-1]
+	}
+
+	return headerLine, rest
+}
+
+func readHeaderForFix(headerLine []byte) ([]string, error) {
+	r := checks.NewSemicolonCSVReader(headerLine)
+	return r.Read()
+}
+
+func trimHeaderRecord(record []string) bool {
+	changed := false
+
+	for i, v := range record {
+		trimmed := strings.TrimSpace(v)
+		if v != trimmed {
+			record[i] = trimmed
+			changed = true
+		}
+	}
+
+	return changed
+}
+
+func writeHeaderRecord(record []string, lineSep string, stripFinalNewline bool) ([]byte, error) {
+	var hb bytes.Buffer
+
+	w := csv.NewWriter(&hb)
+	w.Comma = ';'
+
+	if err := w.Write(record); err != nil {
+		return nil, err
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return nil, err
+	}
+
+	newHeader := hb.Bytes()
+	if lineSep == "\r\n" {
+		newHeader = bytes.ReplaceAll(newHeader, []byte("\n"), []byte("\r\n"))
+	}
+
+	if stripFinalNewline {
+		newHeader = trimFinalCSVWriterNewline(newHeader)
+	}
+
+	return newHeader, nil
+}
+
+func trimFinalCSVWriterNewline(data []byte) []byte {
+	if bytes.HasSuffix(data, []byte("\r\n")) {
+		return data[:len(data)-2]
+	}
+
+	if bytes.HasSuffix(data, []byte("\n")) {
+		return data[:len(data)-1]
+	}
+
+	return data
+}
+
+func noHeaderTrimFix(a checks.Artifact, note string) checks.FixResult {
+	return checks.FixResult{
+		Data:      a.Data,
+		Path:      "",
+		DidChange: false,
+		Note:      note,
+	}
 }

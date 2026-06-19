@@ -52,7 +52,7 @@ func TestFixNoSpacesInHeader(t *testing.T) {
 			data:           "\n \n\t\n",
 			wantErrIsNoFix: true,
 			wantDidChange:  false,
-			wantNoteFrag:   "cannot parse header; skip",
+			wantNoteFrag:   "no usable content to trim header",
 		},
 		{
 			name:          "context cancelled -> returns context error",
@@ -82,52 +82,37 @@ func TestFixNoSpacesInHeader(t *testing.T) {
 
 			fr, err := fixNoSpacesInHeader(ctx, a)
 
-			// error expectations
-			if tt.wantErrNil && err != nil {
-				t.Fatalf("unexpected err: %v", err)
-			}
-			if tt.wantErrIsNoFix && !errors.Is(err, checks.ErrNoFix) {
-				t.Fatalf("expected ErrNoFix, got: %v", err)
-			}
-			if !tt.wantErrNil && !tt.wantErrIsNoFix && !tt.cancelCtx {
-				// if we don't expect err=nil or ErrNoFix, then we expected some other error
-				if err == nil {
-					t.Fatalf("expected non-nil err, got nil")
-				}
-			}
 			if tt.cancelCtx {
-				if err == nil {
-					t.Fatalf("expected context error when ctx cancelled, got nil")
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("expected context.Canceled, got %v", err)
 				}
-				// ctx cancelled scenario: we can bail on deeper asserts because fix bails early
 				return
 			}
 
-			// DidChange expectation
+			if tt.wantErrNil && err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+
+			if tt.wantErrIsNoFix && !errors.Is(err, checks.ErrNoFix) {
+				t.Fatalf("expected ErrNoFix, got: %v", err)
+			}
+
+			if !tt.wantErrNil && !tt.wantErrIsNoFix && err == nil {
+				t.Fatalf("expected non-nil err, got nil")
+			}
+
 			if fr.DidChange != tt.wantDidChange {
 				t.Fatalf("DidChange mismatch: got %v, want %v", fr.DidChange, tt.wantDidChange)
 			}
 
-			// Note fragment expectation (basic contains)
 			if tt.wantNoteFrag != "" && !strings.Contains(fr.Note, tt.wantNoteFrag) {
 				t.Fatalf("Note mismatch: got %q, want fragment %q", fr.Note, tt.wantNoteFrag)
 			}
 
 			if tt.wantHeaderAfter != "" {
-				// смотрим первую строку результирующих данных
-				outLines := strings.Split(string(fr.Data), "\n")
-				if len(outLines) == 0 {
-					t.Fatalf("no output lines in FixResult")
-				}
-				gotHeader := outLines[0]
-				if strings.TrimSpace(gotHeader) == "" && len(outLines) > 1 {
-					for _, ln := range outLines {
-						if strings.TrimSpace(ln) != "" {
-							gotHeader = ln
-							break
-						}
-					}
-				}
+				gotHeader, _, _ := strings.Cut(string(fr.Data), "\n")
+				gotHeader = strings.TrimSuffix(gotHeader, "\r")
+
 				if gotHeader != tt.wantHeaderAfter {
 					t.Fatalf("header after fix mismatch:\n got:  %q\n want: %q", gotHeader, tt.wantHeaderAfter)
 				}

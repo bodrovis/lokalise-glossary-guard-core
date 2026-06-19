@@ -15,38 +15,39 @@ func fixCSVExt(ctx context.Context, a checks.Artifact) (checks.FixResult, error)
 		return checks.FixResult{}, err
 	}
 
-	orig := a.Path
-	fp := strings.TrimSpace(orig)
-	if fp == "" {
+	path := strings.TrimSpace(a.Path)
+	if path == "" {
 		return checks.FixResult{
 			Data:      a.Data,
-			Path:      "", // keep original (empty)
+			Path:      "",
 			DidChange: false,
 			Note:      "empty path: nothing to fix",
 		}, nil
 	}
 
-	ext := filepath.Ext(fp)              // ".txt" | ".CSV" | ""
-	base := strings.TrimSuffix(fp, ext)  // "name" | "archive.tar"
-	base = strings.TrimSuffix(base, ".") // "name." -> "name"
-
-	newPath := base + ".csv"
-	changed := newPath != fp
-
-	note := "already has .csv extension"
-	if changed {
-		note = "renamed to .csv"
+	ext := filepath.Ext(path)
+	if strings.EqualFold(ext, ".csv") {
+		return checks.FixResult{
+			Data:      a.Data,
+			Path:      "",
+			DidChange: false,
+			Note:      "already has .csv extension",
+		}, nil
 	}
 
-	outPath := ""
-	if changed {
-		outPath = newPath
-	}
+	newPath := withCSVExtension(path, ext)
 
 	return checks.FixResult{
 		Data:      a.Data,
-		Path:      outPath,
-		DidChange: changed,
-		Note:      note,
+		Path:      newPath,
+		DidChange: true,
+		Note:      "renamed to .csv",
 	}, nil
+}
+
+func withCSVExtension(path, ext string) string {
+	base := strings.TrimSuffix(path, ext)
+	base = strings.TrimSuffix(base, ".")
+
+	return base + ".csv"
 }

@@ -1,10 +1,7 @@
 package duplicate_header_cells
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/csv"
 	"strconv"
 	"strings"
 
@@ -43,76 +40,139 @@ func runWarnDuplicateHeaderCells(ctx context.Context, a checks.Artifact, opts ch
 
 func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return cancelledValidation(err)
 	}
 
-	if len(bytes.TrimSpace(a.Data)) == 0 {
-		return checks.ValidationResult{OK: true, Msg: "no content to check for duplicate headers"}
-	}
-
-	br := bufio.NewReader(bytes.NewReader(a.Data))
-	r := csv.NewReader(br)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
-
-	var header []string
-	for {
-		rec, err := r.Read()
-		if err != nil || rec == nil {
-			if ctx.Err() != nil {
-				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
-			}
-			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to check for duplicates)"}
-		}
-		nonEmpty := false
-		for _, c := range rec {
-			if strings.TrimSpace(c) != "" {
-				nonEmpty = true
-				break
-			}
-		}
-		if nonEmpty {
-			header = rec
-			break
+	data := checks.StripUTF8BOM(a.Data)
+	if checks.IsBlankUnicode(data) {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no content to check for duplicate headers",
 		}
 	}
 
-	type stat struct {
-		Count  int
-		Sample string
-	}
-	seen := make(map[string]*stat)
-
-	for _, c := range header {
-		if err := ctx.Err(); err != nil {
-			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
-		}
-		trimmed := strings.TrimSpace(c)
-
-		key := strings.ToLower(trimmed)
-
-		sample := trimmed
-		if sample == "" {
-			sample = `"<empty>"`
-		}
-
-		if s, ok := seen[key]; ok {
-			s.Count++
-		} else {
-			seen[key] = &stat{Count: 1, Sample: sample}
-		}
+	header, res, ok := readDuplicateHeader(ctx, data)
+	if !ok {
+		return res
 	}
 
-	var dups []string
-	for _, st := range seen {
-		if st.Count > 1 {
-			dups = append(dups, st.Sample+"("+strconv.Itoa(st.Count)+")")
-		}
+	dups, err := findDuplicateHeaderCells(ctx, header)
+	if err != nil {
+		return cancelledValidation(err)
 	}
 
 	if len(dups) == 0 {
-		return checks.ValidationResult{OK: true, Msg: "no duplicate header columns"}
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no duplicate header columns",
+		}
 	}
-	return checks.ValidationResult{OK: false, Msg: "duplicate header columns: " + strings.Join(dups, ", ")}
+
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "duplicate header columns: " + strings.Join(dups, ", "),
+	}
+}
+
+func readDuplicateHeader(
+	ctx context.Context,
+	data []byte,
+) ([]string, checks.ValidationResult, bool) {
+	r := checks.NewSemicolonCSVReader(data)
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, cancelledValidation(err), false
+		}
+
+		rec, err := r.Read()
+		if err != nil || rec == nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, cancelledValidation(ctxErr), false
+			}
+
+			return nil, checks.ValidationResult{
+				OK:  true,
+				Msg: "no header line found (nothing to check for duplicates)",
+			}, false
+		}
+
+		if !isBlankHeaderRecord(rec) {
+			return rec, checks.ValidationResult{}, true
+		}
+	}
+}
+
+func isBlankHeaderRecord(record []string) bool {
+	for _, col := range record {
+		if !checks.IsBlankUnicode([]byte(col)) {
+			return false
+		}
+	}
+
+	return true
+}
+
+type duplicateHeaderStat struct {
+	count    int
+	sample   string
+	reported bool
+}
+
+func findDuplicateHeaderCells(ctx context.Context, header []string) ([]string, error) {
+	seen := make(map[string]*duplicateHeaderStat, len(header))
+	var duplicateOrder []string
+
+	for _, col := range header {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		key := duplicateHeaderKey(col)
+		sample := duplicateHeaderSample(col)
+
+		stat, ok := seen[key]
+		if !ok {
+			seen[key] = &duplicateHeaderStat{
+				count:  1,
+				sample: sample,
+			}
+			continue
+		}
+
+		stat.count++
+		if !stat.reported {
+			duplicateOrder = append(duplicateOrder, key)
+			stat.reported = true
+		}
+	}
+
+	dups := make([]string, 0, len(duplicateOrder))
+	for _, key := range duplicateOrder {
+		stat := seen[key]
+		dups = append(dups, stat.sample+"("+strconv.Itoa(stat.count)+")")
+	}
+
+	return dups, nil
+}
+
+func duplicateHeaderKey(col string) string {
+	return strings.ToLower(strings.TrimSpace(col))
+}
+
+func duplicateHeaderSample(col string) string {
+	sample := strings.TrimSpace(col)
+	if sample == "" {
+		return `"<empty>"`
+	}
+
+	return sample
+}
+
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
 }

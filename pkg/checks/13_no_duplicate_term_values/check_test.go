@@ -43,7 +43,7 @@ func TestValidateWarnDuplicateTermValues_WithDuplicates_Warn(t *testing.T) {
 
 	ctx := context.Background()
 
-	// "Apple" appears twice (rows 2 and 4, 1-based)
+	// "Apple" appears twice (rows 2 and 5, 1-based)
 	// "Banana" is unique
 	// "apple" (lowercase) is different term because we're case-sensitive
 	csv := "" +
@@ -189,9 +189,7 @@ func TestValidateWarnDuplicateTermValues_NoTermColumn_PASS(t *testing.T) {
 	}
 }
 
-// --- e2e test for runWarnDuplicateTermValues ---
-
-func TestRunWarnDuplicateTermValues_EndToEnd_WarnNoFix(t *testing.T) {
+func TestRunWarnDuplicateTermValues_EndToEnd_NoAutoFix(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -230,5 +228,67 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WarnNoFix(t *testing.T) {
 	}
 	if !strings.Contains(out.Result.Message, "2") || !strings.Contains(out.Result.Message, "4") {
 		t.Fatalf("expected Result.Message to mention row numbers, got: %q", out.Result.Message)
+	}
+}
+
+func TestRunWarnDuplicateTermValues_EndToEnd_WithAutoFix(t *testing.T) {
+	t.Parallel()
+
+	csv := "" +
+		"term;description\n" +
+		"Apple;desc1\n" +
+		"Banana;desc2\n" +
+		"Apple;desc3\n"
+
+	a := checks.Artifact{
+		Data: []byte(csv),
+		Path: "e2e.csv",
+	}
+
+	out := runWarnDuplicateTermValues(context.Background(), a, checks.RunOptions{
+		FixMode:       checks.FixIfFailed,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("expected status PASS after fix, got %s (%s)", out.Result.Status, out.Result.Message)
+	}
+
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+
+	want := "" +
+		"term;description\n" +
+		"Apple;desc1\n" +
+		"Banana;desc2\n"
+
+	if string(out.Final.Data) != want {
+		t.Fatalf("Final.Data mismatch.\n got:\n%q\nwant:\n%q", string(out.Final.Data), want)
+	}
+
+	if out.Final.Path != a.Path {
+		t.Fatalf("Final.Path must remain unchanged (got %q want %q)", out.Final.Path, a.Path)
+	}
+}
+
+func TestValidateWarnDuplicateTermValues_BOMBeforeHeader(t *testing.T) {
+	t.Parallel()
+
+	csv := "\xEF\xBB\xBFterm;description\nApple;one\nApple;two\n"
+
+	res := validateWarnDuplicateTermValues(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "bom.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected duplicate warning")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, `"Apple"`) {
+		t.Fatalf("expected message to include Apple, got %q", res.Msg)
 	}
 }

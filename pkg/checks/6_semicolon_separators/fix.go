@@ -3,6 +3,7 @@ package semicolon_separator
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -13,70 +14,118 @@ func fixToSemicolonsIfConsistent(ctx context.Context, a checks.Artifact) (checks
 		return checks.FixResult{}, err
 	}
 
-	in := a.Data
-
-	// Strip optional UTF-8 BOM, but remember to restore it if we actually convert.
-	bom := []byte{}
-	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
-		bom = []byte{0xEF, 0xBB, 0xBF}
-		in = in[3:]
-	}
-
-	// Treat files with only whitespace/zero-width as having no usable content.
+	in, bom := checks.SplitUTF8BOM(a.Data)
 	if checks.IsBlankUnicode(in) {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "no usable content to convert"}, checks.ErrNoFix
+		return noSeparatorFix(a, "no usable content to convert"), checks.ErrNoFix
 	}
 
-	// detect line ending to preserve
-	sep := checks.DetectLineEnding(in)
-	dataStr := string(in)
+	lineSep := checks.DetectLineEnding(in)
+	keepFinalNewline := hasFinalNewline(in)
 
-	if ok, _ := attemptRectParse(dataStr, ';'); ok {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "already semicolon-separated"}, nil
+	alreadyOK, err := attemptRectParse(ctx, in, ';')
+	if err != nil {
+		return checks.FixResult{}, err
+	}
+	if alreadyOK {
+		return noSeparatorFix(a, "already semicolon-separated"), nil
 	}
 
-	commaOK, commaRecs := attemptRectParse(dataStr, ',')
-	tabOK, tabRecs := attemptRectParse(dataStr, '\t')
-
-	switch {
-	case tabOK:
-		out, err := writeCSVWithSep(tabRecs, ';', sep, hasFinalNewline(in))
-		if err != nil {
-			return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to convert from tabs: " + err.Error()}, err
-		}
-		return checks.FixResult{Data: append(bom, out...), Path: "", DidChange: true, Note: "converted from tabs to semicolons"}, nil
-
-	case commaOK:
-		out, err := writeCSVWithSep(commaRecs, ';', sep, hasFinalNewline(in))
-		if err != nil {
-			return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to convert from commas: " + err.Error()}, err
-		}
-		return checks.FixResult{Data: append(bom, out...), Path: "", DidChange: true, Note: "converted from commas to semicolons"}, nil
+	alt, ok, err := detectConvertibleDelimiter(ctx, in)
+	if err != nil {
+		return checks.FixResult{}, err
+	}
+	if !ok {
+		return noSeparatorFix(a, "cannot confidently detect delimiter; skipped auto-convert"), checks.ErrNoFix
 	}
 
-	return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "cannot confidently detect delimiter; skipped auto-convert"}, checks.ErrNoFix
+	converted := writeCSVWithSep(alt.records, ';', lineSep, keepFinalNewline)
+	converted = prependBOM(bom, converted)
+
+	return checks.FixResult{
+		Data:      converted,
+		Path:      "",
+		DidChange: true,
+		Note:      fmt.Sprintf("converted from %s to semicolons", alt.name),
+	}, nil
 }
 
-func writeCSVWithSep(recs [][]string, delim rune, lineSep string, keepFinal bool) ([]byte, error) {
-	var b strings.Builder
-	escape := func(field string) string {
-		if strings.ContainsRune(field, delim) || strings.ContainsAny(field, "\"\n\r") {
-			return `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
-		}
-		return field
+func prependBOM(bom, data []byte) []byte {
+	if len(bom) == 0 {
+		return data
 	}
+
+	out := make([]byte, 0, len(bom)+len(data))
+	out = append(out, bom...)
+	out = append(out, data...)
+	return out
+}
+
+type convertibleDelimiter struct {
+	name    string
+	records [][]string
+}
+
+func detectConvertibleDelimiter(ctx context.Context, data []byte) (convertibleDelimiter, bool, error) {
+	commaRecs, commaOK, err := parseRectRecords(ctx, data, ',')
+	if err != nil {
+		return convertibleDelimiter{}, false, err
+	}
+
+	tabRecs, tabOK, err := parseRectRecords(ctx, data, '\t')
+	if err != nil {
+		return convertibleDelimiter{}, false, err
+	}
+
+	switch {
+	case commaOK && !tabOK:
+		return convertibleDelimiter{name: "commas", records: commaRecs}, true, nil
+	case tabOK && !commaOK:
+		return convertibleDelimiter{name: "tabs", records: tabRecs}, true, nil
+	default:
+		// none detected OR ambiguous comma+tab detection
+		return convertibleDelimiter{}, false, nil
+	}
+}
+
+func noSeparatorFix(a checks.Artifact, note string) checks.FixResult {
+	return checks.FixResult{
+		Data:      a.Data,
+		Path:      "",
+		DidChange: false,
+		Note:      note,
+	}
+}
+
+func writeCSVWithSep(recs [][]string, delim rune, lineSep string, keepFinal bool) []byte {
+	var b strings.Builder
+
 	for i, row := range recs {
 		for j, col := range row {
 			if j > 0 {
 				b.WriteRune(delim)
 			}
-			b.WriteString(escape(col))
+			b.WriteString(escapeCSVField(col, delim))
 		}
+
 		if i < len(recs)-1 || keepFinal {
 			b.WriteString(lineSep)
 		}
 	}
-	return []byte(b.String()), nil
+
+	return []byte(b.String())
+}
+
+func escapeCSVField(field string, delim rune) string {
+	if !needsCSVQuotes(field, delim) {
+		return field
+	}
+
+	return `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
+}
+
+func needsCSVQuotes(field string, delim rune) bool {
+	return strings.ContainsRune(field, delim) ||
+		strings.ContainsAny(field, "\"\n\r")
 }
 
 func hasFinalNewline(b []byte) bool {

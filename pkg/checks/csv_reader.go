@@ -36,12 +36,17 @@ func NewSemicolonCSVReaderWithCtx(
 	return reader, ValidationResult{}, true
 }
 
-func NewSemicolonCSVReader(data []byte) *csv.Reader {
+func NewCSVReader(data []byte, delim rune) *csv.Reader {
 	br := bufio.NewReader(bytes.NewReader(data))
+
 	r := csv.NewReader(br)
-	r.Comma = ';'
+	r.Comma = delim
 	r.FieldsPerRecord = -1
 	r.LazyQuotes = true
 
 	return r
+}
+
+func NewSemicolonCSVReader(data []byte) *csv.Reader {
+	return NewCSVReader(data, ';')
 }

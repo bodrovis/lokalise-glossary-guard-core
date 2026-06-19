@@ -1,4 +1,3 @@
-// file: pkg/checks/valid_extension/fix_test.go
 package valid_extension
 
 import (
@@ -21,7 +20,7 @@ func TestFixCSVExt_BasicCases(t *testing.T) {
 	cases := []tc{
 		{path: "file.csv", wantPath: "", wantChange: false, wantNote: "already has .csv extension"},
 		{path: "file.txt", wantPath: "file.csv", wantChange: true, wantNote: "renamed to .csv"},
-		{path: "report.CSV", wantPath: "report.csv", wantChange: true, wantNote: "renamed to .csv"},
+		{path: "report.CSV", wantPath: "", wantChange: false, wantNote: "already has .csv extension"},
 		{path: "dir/name.tsv", wantPath: "dir/name.csv", wantChange: true, wantNote: "renamed to .csv"},
 		{path: "archive.tar.gz", wantPath: "archive.tar.csv", wantChange: true, wantNote: "renamed to .csv"},
 		{path: "name.", wantPath: "name.csv", wantChange: true, wantNote: "renamed to .csv"},
@@ -104,5 +103,27 @@ func TestRunEnsureCSV_FixPipeline_E2E(t *testing.T) {
 	}
 	if !out.Final.DidChange {
 		t.Fatalf("DidChange=false, expected true after rename")
+	}
+}
+
+func TestRunEnsureCSV_FixAlways_DoesNotRewriteUppercaseCSV(t *testing.T) {
+	t.Parallel()
+
+	out := runEnsureCSV(context.Background(), checks.Artifact{
+		Path: "report.CSV",
+		Data: []byte("hello"),
+	}, checks.RunOptions{
+		FixMode:       checks.FixAlways,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("status=%s, want PASS, msg=%q", out.Result.Status, out.Result.Message)
+	}
+	if out.Final.DidChange {
+		t.Fatalf("DidChange=true, expected false for already valid .CSV extension")
+	}
+	if out.Final.Path != "report.CSV" && out.Final.Path != "" {
+		t.Fatalf("unexpected Final.Path=%q", out.Final.Path)
 	}
 }

@@ -2,6 +2,7 @@ package allowed_columns_header
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -34,7 +35,7 @@ func Test_validateAllowedColumnsHeader(t *testing.T) {
 			wantInMsg:   []string{"header columns are allowed"},
 		},
 		{
-			name:        "lang-looking columns but no langs[] provided => OK false",
+			name:        "lang-looking columns but no langs[] provided => OK true with informational message",
 			headerLines: []string{"term;description;en;en_description;pt-BR;pt-BR_description;wtf"},
 			langs:       nil,
 			wantOK:      true,
@@ -44,6 +45,37 @@ func Test_validateAllowedColumnsHeader(t *testing.T) {
 				"pt-BR",
 				"wtf",
 			},
+		},
+		{
+			name:        "strict mode: declared lang missing description column => OK false",
+			headerLines: []string{"term;description;en"},
+			langs:       []string{"en"},
+			wantOK:      false,
+			wantInMsg: []string{
+				"missing",
+				"en_description",
+			},
+		},
+		{
+			name:        "UTF-8 BOM before header is ignored",
+			headerLines: []string{"\xEF\xBB\xBFterm;description;en;en_description"},
+			langs:       []string{"en"},
+			wantOK:      true,
+			wantInMsg:   []string{"header columns are allowed"},
+		},
+		{
+			name:        "strict mode normalizes hyphen and underscore in lang codes",
+			headerLines: []string{"term;description;pt_BR;pt_BR_description"},
+			langs:       []string{"pt-BR"},
+			wantOK:      true,
+			wantInMsg:   []string{"header columns are allowed"},
+		},
+		{
+			name:        "language description suffix is case-insensitive",
+			headerLines: []string{"term;description;en;en_Description"},
+			langs:       []string{"en"},
+			wantOK:      true,
+			wantInMsg:   []string{"header columns are allowed"},
 		},
 		{
 			name:        "unknown garbage column with no langs list => OK false, unknownCols path",
@@ -148,5 +180,25 @@ func Test_validateAllowedColumnsHeader(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestValidateAllowedColumnsHeader_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res := validateAllowedColumnsHeader(ctx, checks.Artifact{
+		Data:  []byte("term;description;en;en_description"),
+		Langs: []string{"en"},
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false on cancelled context")
+	}
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", res.Err)
+	}
+	if !strings.Contains(strings.ToLower(res.Msg), "cancelled") {
+		t.Fatalf("expected cancellation message, got %q", res.Msg)
 	}
 }

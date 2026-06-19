@@ -35,7 +35,7 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			name:    "duplicate case-insensitive",
 			csv:     "Term;description;TERM;DeScRiPtIoN\nfoo;bar;baz;qux\n",
 			wantOK:  false,
-			wantSub: "duplicate header columns:",
+			wantSub: "duplicate header columns: Term(2), description(2)",
 		},
 		{
 			name:    "multiple unique cols, no dupes despite spacing",
@@ -59,7 +59,19 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			name:    "duplicate empty headers",
 			csv:     "term;;description;;\nfoo;A;desc;B;\n",
 			wantOK:  false,
-			wantSub: "duplicate header columns:",
+			wantSub: `"<empty>"(3)`,
+		},
+		{
+			name:    "BOM before header does not hide duplicate",
+			csv:     "\xEF\xBB\xBFterm;description;term\nx;y;z\n",
+			wantOK:  false,
+			wantSub: "duplicate header columns: term(2)",
+		},
+		{
+			name:    "skips blank lines before header",
+			csv:     "\n  \nterm;description;term\nx;y;z\n",
+			wantOK:  false,
+			wantSub: "duplicate header columns: term(2)",
 		},
 	}
 
@@ -80,7 +92,7 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 				t.Fatalf("OK mismatch. got %v, want %v. Msg=%q", res.OK, c.wantOK, res.Msg)
 			}
 
-			if !contains(res.Msg, c.wantSub) {
+			if !strings.Contains(res.Msg, c.wantSub) {
 				t.Fatalf("Msg mismatch.\n got: %q\nwant substring: %q", res.Msg, c.wantSub)
 			}
 
@@ -90,12 +102,4 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			}
 		})
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return stringsContains(haystack, needle)
-}
-
-func stringsContains(s, sub string) bool {
-	return strings.Contains(s, sub)
 }

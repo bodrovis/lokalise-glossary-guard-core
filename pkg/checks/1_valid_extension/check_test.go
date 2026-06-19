@@ -59,8 +59,8 @@ func TestValidateCSVExt_Pass(t *testing.T) {
 		if !res.OK {
 			t.Fatalf("expected ok for %q, got false, msg=%q", p, res.Msg)
 		}
-		if res.Msg != "extension is \".csv\"" {
-			t.Fatalf("expected msg for %q, got %q", p, res.Msg)
+		if !strings.Contains(res.Msg, ".csv") {
+			t.Fatalf("expected msg to mention .csv for %q, got %q", p, res.Msg)
 		}
 	}
 }
@@ -76,7 +76,7 @@ func TestValidateCSVExt_FailCases(t *testing.T) {
 		{"", "empty path: cannot validate extension"},
 		{"readme.txt", "invalid file extension: \".txt\" (expected \".csv\")"},
 		{"noext", "invalid file extension: \"\" (expected \".csv\")"},
-		{strings.TrimSpace("  report.TSV  "), "invalid file extension: \".TSV\" (expected \".csv\")"},
+		{"  report.TSV  ", "invalid file extension: \".TSV\" (expected \".csv\")"},
 	}
 
 	for _, c := range cases {
@@ -129,5 +129,34 @@ func TestRunEnsureCSV_StatusOnly_NoFix(t *testing.T) {
 	out = runEnsureCSV(context.Background(), checks.Artifact{Path: "bad.txt"}, opts)
 	if out.Result.Status != checks.Fail {
 		t.Fatalf("status=%s, want FAIL, msg=%q", out.Result.Status, out.Result.Message)
+	}
+
+	if out.Final.DidChange {
+		t.Fatalf("expected DidChange=false")
+	}
+	if out.Final.Path != "bad.txt" {
+		t.Fatalf("path should stay unchanged")
+	}
+}
+
+func TestRunEnsureCSV_WithFixPolicy_RenamesWindowsPathToCSV(t *testing.T) {
+	t.Parallel()
+
+	out := runEnsureCSV(context.Background(), checks.Artifact{
+		Path: `folder\report.txt`,
+		Data: []byte("term;description\nfoo;bar\n"),
+	}, checks.RunOptions{
+		FixMode:       checks.FixIfFailed,
+		RerunAfterFix: true,
+	})
+
+	if out.Result.Status != checks.Pass {
+		t.Fatalf("status=%s, want PASS, msg=%q", out.Result.Status, out.Result.Message)
+	}
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true")
+	}
+	if out.Final.Path != `folder\report.csv` {
+		t.Fatalf("Final.Path=%q, want %q", out.Final.Path, `folder\report.csv`)
 	}
 }

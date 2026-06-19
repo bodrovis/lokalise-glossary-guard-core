@@ -73,11 +73,11 @@ func TestValidateNoEmptyTermValues_EmptyTerms_Fail(t *testing.T) {
 	wantSub1 := "3"
 	wantSub2 := "4"
 
-	if !contains(res.Msg, wantSub1) || !contains(res.Msg, wantSub2) {
+	if !strings.Contains(res.Msg, wantSub1) || !strings.Contains(res.Msg, wantSub2) {
 		t.Fatalf("expected offending row numbers in message. got: %q (want rows %s and %s)", res.Msg, wantSub1, wantSub2)
 	}
 
-	if !contains(res.Msg, "total 2") {
+	if !strings.Contains(res.Msg, "total 2") {
 		t.Fatalf("expected total count in message, got: %q", res.Msg)
 	}
 }
@@ -106,7 +106,7 @@ func TestValidateNoEmptyTermValues_TooMany_EarlyCut(t *testing.T) {
 		t.Fatalf("expected Err=nil on FAIL, got %v", res.Err)
 	}
 
-	if !contains(res.Msg, "total 15") {
+	if !strings.Contains(res.Msg, "total 15") {
 		t.Fatalf("expected message to include total 15, got: %q", res.Msg)
 	}
 
@@ -116,7 +116,7 @@ func TestValidateNoEmptyTermValues_TooMany_EarlyCut(t *testing.T) {
 	}
 }
 
-func TestValidateNoEmptyTermValues_NoHeader_Pass(t *testing.T) {
+func TestValidateNoEmptyTermValues_BlankContent_Pass(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -173,22 +173,78 @@ func TestRunNoEmptyTermValues_EndToEnd(t *testing.T) {
 		t.Fatalf("Final.Path must remain unchanged (got %q want %q)", out.Final.Path, a.Path)
 	}
 
-	if !contains(out.Result.Message, "empty term") {
+	if !strings.Contains(out.Result.Message, "empty term") {
 		t.Fatalf("expected message to mention 'empty term', got: %q", out.Result.Message)
 	}
-	if !contains(out.Result.Message, "3") {
+	if !strings.Contains(out.Result.Message, "3") {
 		t.Fatalf("expected message to mention offending row number 3, got: %q", out.Result.Message)
 	}
 }
 
-// --- helpers ---
+func TestValidateNoEmptyTermValues_BOMBeforeTermHeader(t *testing.T) {
+	t.Parallel()
 
-func contains(haystack, needle string) bool {
-	return stringsContains(haystack, needle)
+	csv := "\xEF\xBB\xBFterm;description\nhello;ok\n;bad\n"
+
+	res := validateNoEmptyTermValues(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "bom.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because row 3 has empty term")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, "3") {
+		t.Fatalf("expected row 3 in message, got %q", res.Msg)
+	}
 }
 
-func stringsContains(s, sub string) bool {
-	return strings.Contains(s, sub)
+func TestValidateNoEmptyTermValues_NoTermColumn_Pass(t *testing.T) {
+	t.Parallel()
+
+	csv := "description;fr\nhello;bonjour\n"
+
+	res := validateNoEmptyTermValues(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "no_term.csv",
+	})
+
+	if !res.OK {
+		t.Fatalf("expected OK=true when term column is absent, got Msg=%q Err=%v", res.Msg, res.Err)
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, "no 'term' column found") {
+		t.Fatalf("expected no term column message, got %q", res.Msg)
+	}
+}
+
+func TestValidateNoEmptyTermValues_ShortRowMissingTermCell_Fail(t *testing.T) {
+	t.Parallel()
+
+	csv := "" +
+		"description;term;fr\n" +
+		"desc1;hello;bonjour\n" +
+		"desc2\n"
+
+	res := validateNoEmptyTermValues(context.Background(), checks.Artifact{
+		Data: []byte(csv),
+		Path: "short.csv",
+	})
+
+	if res.OK {
+		t.Fatalf("expected OK=false because row 3 has no term cell")
+	}
+	if res.Err != nil {
+		t.Fatalf("expected Err=nil, got %v", res.Err)
+	}
+	if !strings.Contains(res.Msg, "3") {
+		t.Fatalf("expected row 3 in message, got %q", res.Msg)
+	}
 }
 
 // this helper is just a cheap way to approximate "how many row numbers did we list"

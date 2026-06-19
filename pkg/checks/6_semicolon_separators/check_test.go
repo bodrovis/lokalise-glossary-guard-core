@@ -9,8 +9,7 @@ import (
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-// we assume validateSemicolonSeparated now uses attemptRectParse()
-// and runEnsureSemicolonSeparators uses RunWithFix(recipe) with FailAs = checks.Fail.
+// RunWithFix defaults empty FailAs to checks.Fail.
 
 func TestValidateSemicolonSeparated(t *testing.T) {
 	t.Run("semicolon -> pass", func(t *testing.T) {
@@ -160,6 +159,40 @@ func TestValidateSemicolonSeparated(t *testing.T) {
 	})
 }
 
+func TestValidateSemicolonSeparated_UTF8BOMSemicolonPasses(t *testing.T) {
+	a := checks.Artifact{
+		Data: append([]byte{0xEF, 0xBB, 0xBF}, []byte("term;description\nhello;world\n")...),
+	}
+
+	res := validateSemicolonSeparated(context.Background(), a)
+	if !res.OK {
+		t.Fatalf("expected OK=true for UTF-8 BOM + semicolon CSV, got: %+v", res)
+	}
+	if res.Err != nil {
+		t.Fatalf("did not expect Err, got %v", res.Err)
+	}
+}
+
+func TestAttemptRectParse_DelimiterMatters(t *testing.T) {
+	data := []byte("term,description\nhello,world\n")
+
+	semiOK, err := attemptRectParse(context.Background(), data, ';')
+	if err != nil {
+		t.Fatalf("semicolon parse returned error: %v", err)
+	}
+	if semiOK {
+		t.Fatalf("semicolon parse returned true for comma-separated data")
+	}
+
+	commaOK, err := attemptRectParse(context.Background(), data, ',')
+	if err != nil {
+		t.Fatalf("comma parse returned error: %v", err)
+	}
+	if !commaOK {
+		t.Fatalf("comma parse returned false for comma-separated data")
+	}
+}
+
 func TestRunEnsureSemicolonSeparators_EndToEnd_NoAutoFix(t *testing.T) {
 	// scenario:
 	// - artifact is comma-separated
@@ -196,14 +229,6 @@ func TestRunEnsureSemicolonSeparators_EndToEnd_NoAutoFix(t *testing.T) {
 }
 
 func TestRunEnsureSemicolonSeparators_EndToEnd_WithAutoFix(t *testing.T) {
-	// scenario:
-	// - artifact is comma-separated and clean (rectangular)
-	// - RunOptions says FixIfFailed (so fix can run)
-	// - we expect:
-	//   - Result.Status == PASS or whatever StatusAfterFixed is (PASS)
-	//   - Final.DidChange == true
-	//   - Final.Data should now have semicolons
-
 	a := checks.Artifact{
 		Data: []byte("term,description,tags\nhello,world,\"tag1,tag2\"\n"),
 		Path: "good.csv",
@@ -218,28 +243,31 @@ func TestRunEnsureSemicolonSeparators_EndToEnd_WithAutoFix(t *testing.T) {
 		},
 	)
 
-	if out.Final.DidChange != true {
-		t.Fatalf("expected DidChange=true because autofix should've happened")
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true because autofix should have happened")
 	}
 
-	// final data should now use ';'
 	finalStr := string(out.Final.Data)
-	if !strings.Contains(finalStr, ";") {
-		t.Fatalf("expected converted output to contain semicolons, got: %q", finalStr)
-	}
-	if strings.Contains(finalStr, ",") && strings.Contains(finalStr, "\n") {
-		// we still might see commas inside quoted fields but:
-		// header separators themselves should now be ';'
-		firstNL := strings.Index(finalStr, "\n")
-		if firstNL > 0 {
-			headerLine := finalStr[:firstNL]
-			if strings.Contains(headerLine, ",") {
-				t.Fatalf("expected header to be semicolon-separated after fix, got %q", headerLine)
-			}
-		}
+
+	firstNL := strings.Index(finalStr, "\n")
+	if firstNL < 0 {
+		t.Fatalf("expected converted output to contain newline, got %q", finalStr)
 	}
 
-	// after successful fix+revalidate, RunWithFix should set StatusAfterFixed (PASS)
+	headerLine := finalStr[:firstNL]
+	if headerLine != "term;description;tags" {
+		t.Fatalf("header = %q, want %q", headerLine, "term;description;tags")
+	}
+
+	want := "term;description;tags\nhello;world;tag1,tag2\n"
+	if finalStr != want {
+		t.Fatalf("converted output mismatch\ngot:  %q\nwant: %q", finalStr, want)
+	}
+
+	if out.Final.Path != a.Path {
+		t.Fatalf("Final.Path = %q, want %q", out.Final.Path, a.Path)
+	}
+
 	if out.Result.Status != checks.Pass {
 		t.Fatalf("expected final status PASS after autofix, got %s (%s)", out.Result.Status, out.Result.Message)
 	}

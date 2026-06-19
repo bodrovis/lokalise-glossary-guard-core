@@ -25,47 +25,69 @@ func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResu
 		return checks.FixResult{}, err
 	}
 
-	data := a.Data
+	data := checks.StripUTF8BOM(a.Data)
 
-	// Optionally strip UTF-8 BOM at the start; we don't keep it in the output header.
-	if bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
-		data = data[3:]
+	if !isEffectivelyEmpty(data) {
+		return noHeaderInserted(a), nil
 	}
 
-	// Consider the file empty if it contains only whitespace/zero-width.
-	if !checks.IsBlankUnicode(bytes.TrimSpace(data)) && !checks.IsBlankUnicode(data) {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "file already has data; no header inserted",
-		}, nil
-	}
-
-	// Build header: base fields + per-language fields (lowercased, deduped).
-	seen := make(map[string]struct{}, len(a.Langs))
-	fields := make([]string, 0, len(baseHeaderFields)+len(a.Langs)*2)
-	fields = append(fields, baseHeaderFields...)
-
-	for _, lang := range a.Langs {
-		lc := strings.ToLower(strings.TrimSpace(lang))
-		if lc == "" {
-			continue
-		}
-		if _, ok := seen[lc]; ok {
-			continue
-		}
-		seen[lc] = struct{}{}
-		fields = append(fields, lc, lc+"_description")
-	}
-
-	// Use ';' as a delimiter to match downstream parsing.
-	header := strings.Join(fields, ";")
+	header := buildCSVHeader(a.Langs)
 
 	return checks.FixResult{
-		Data:      []byte(header), // no trailing newline by design
+		Data:      []byte(header),
 		Path:      "",
 		DidChange: true,
 		Note:      "inserted CSV header",
 	}, nil
+}
+
+func isEffectivelyEmpty(data []byte) bool {
+	// Keep the old behavior:
+	// - raw blank-looking content counts as empty
+	// - TrimSpace-normalized blank-looking content also counts as empty
+	return checks.IsBlankUnicode(data) || checks.IsBlankUnicode(bytes.TrimSpace(data))
+}
+
+func noHeaderInserted(a checks.Artifact) checks.FixResult {
+	return checks.FixResult{
+		Data:      a.Data,
+		Path:      "",
+		DidChange: false,
+		Note:      "file already has data; no header inserted",
+	}
+}
+
+func buildCSVHeader(langs []string) string {
+	return strings.Join(buildHeaderFields(langs), ";")
+}
+
+func buildHeaderFields(langs []string) []string {
+	fields := make([]string, 0, len(baseHeaderFields)+len(langs)*2)
+	fields = append(fields, baseHeaderFields...)
+
+	appendLanguageFields(&fields, langs)
+
+	return fields
+}
+
+func appendLanguageFields(fields *[]string, langs []string) {
+	seen := make(map[string]struct{}, len(langs))
+
+	for _, lang := range langs {
+		lc := normalizeLang(lang)
+		if lc == "" {
+			continue
+		}
+
+		if _, ok := seen[lc]; ok {
+			continue
+		}
+		seen[lc] = struct{}{}
+
+		*fields = append(*fields, lc, lc+"_description")
+	}
+}
+
+func normalizeLang(lang string) string {
+	return strings.ToLower(strings.TrimSpace(lang))
 }

@@ -549,7 +549,7 @@ func TestRunWithFix_RerunAfterFixStillInvalid(t *testing.T) {
 		out,
 		checks.Fail,
 		"rerun-still-invalid",
-		"auto-fix failed validation : still invalid after fix",
+		"auto-fix failed validation: still invalid after fix",
 	)
 	assertFixApplied(t, out, "fixed-ish", "old.csv")
 }
@@ -709,4 +709,66 @@ func assertNoFixApplied(t *testing.T, out checks.CheckOutcome, wantData string, 
 	if out.Final.Path != wantPath {
 		t.Fatalf("Final.Path = %q, want %q", out.Final.Path, wantPath)
 	}
+}
+
+func TestRunWithFix_FixAttemptedWithoutChangesUsesNote(t *testing.T) {
+	t.Parallel()
+
+	out := checks.RunWithFix(
+		context.Background(),
+		testArtifact(),
+		checks.RunOptions{
+			FixMode:       checks.FixAlways,
+			RerunAfterFix: false,
+		},
+		checks.RunRecipe{
+			Name: "no-change-fix-note",
+			Validate: func(context.Context, checks.Artifact) checks.ValidationResult {
+				return checks.ValidationResult{OK: false, Msg: "invalid"}
+			},
+			Fix: func(context.Context, checks.Artifact) (checks.FixResult, error) {
+				return checks.FixResult{
+					Data:      []byte("bad"),
+					Path:      "",
+					DidChange: false,
+					Note:      "no safe changes",
+				}, nil
+			},
+		},
+	)
+
+	assertOutcome(t, out, checks.Warn, "no-change-fix-note", "no safe changes")
+	assertNoFixApplied(t, out, "bad", "old.csv")
+}
+
+func TestRunWithFix_WarnCheckFixIfFailedStillAttemptsFix(t *testing.T) {
+	t.Parallel()
+
+	called := false
+
+	out := checks.RunWithFix(
+		context.Background(),
+		testArtifact(),
+		checks.RunOptions{
+			FixMode:       checks.FixIfFailed,
+			RerunAfterFix: false,
+		},
+		checks.RunRecipe{
+			Name:   "warn-fix",
+			FailAs: checks.Warn,
+			Validate: func(context.Context, checks.Artifact) checks.ValidationResult {
+				return checks.ValidationResult{OK: false, Msg: "warn invalid"}
+			},
+			Fix: func(context.Context, checks.Artifact) (checks.FixResult, error) {
+				called = true
+				return checks.FixResult{Data: []byte("fixed")}, nil
+			},
+		},
+	)
+
+	if !called {
+		t.Fatalf("Fix was not called for FailAs=Warn with FixIfFailed")
+	}
+	assertOutcome(t, out, checks.Warn, "warn-fix", "auto-fix applied")
+	assertFixApplied(t, out, "fixed", "old.csv")
 }

@@ -39,7 +39,7 @@ func fixUTF8(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
 func fixBOMEncoded(ctx context.Context, data []byte) (checks.FixResult, bool, error) {
 	switch sniffBOM(data) {
 	case bomUTF8:
-		trimmed := bytes.TrimPrefix(data, utf8BOM)
+		trimmed := checks.StripUTF8BOM(data)
 		return checks.FixResult{
 			Data:      trimmed,
 			DidChange: !bytes.Equal(trimmed, data),

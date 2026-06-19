@@ -1,9 +1,8 @@
 package empty_lines
 
 import (
-	"bufio"
-	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -12,6 +11,12 @@ import (
 )
 
 const checkName = "ensure-no-empty-lines"
+
+const (
+	maxScannedLineSize = 16 << 20
+	ctxCheckEveryLine  = 1 << 16
+	maxReportedLines   = 10
+)
 
 func init() {
 	ch, err := checks.NewCheckAdapter(
@@ -42,70 +47,62 @@ func runNoEmptyLines(ctx context.Context, a checks.Artifact, opts checks.RunOpti
 
 func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return cancelledValidation(err)
 	}
-	total, first10, err := findEmptyLines(ctx, a.Data)
+
+	report, err := scanEmptyLines(ctx, a.Data)
 	if err != nil {
-		if ctx.Err() != nil {
-			return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return cancelledValidation(err)
 		}
+
 		return checks.ValidationResult{
 			OK:  false,
 			Msg: "failed to scan file for empty lines",
 			Err: err,
 		}
 	}
-	if total == 0 {
+
+	if !report.hasEmptyLines() {
 		return checks.ValidationResult{OK: true, Msg: ""}
 	}
+
 	return checks.ValidationResult{
 		OK:  false,
-		Msg: formatEmptyMsg(total, first10),
+		Msg: report.format(),
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// scanning helpers
-// ─────────────────────────────────────────────────────────────────────────────
+func (r emptyLinesReport) hasEmptyLines() bool {
+	return r.total > 0
+}
 
-// findEmptyLines scans with bufio.Scanner (large buffer) and returns the total
-// number of blank lines (Unicode whitespace + zero-width) and up to the first 10 line numbers.
-func findEmptyLines(ctx context.Context, b []byte) (int, []int, error) {
-	sc := bufio.NewScanner(bytes.NewReader(b))
+func (r emptyLinesReport) format() string {
+	return formatEmptyMsg(r.total, r.first)
+}
 
-	// allow long lines (16 MiB per line)
-	const maxLine = 16 << 20
-	sc.Buffer(make([]byte, 0, 64<<10), maxLine)
+func (r *emptyLinesReport) add(lineNo int) {
+	r.total++
 
-	line, total := 0, 0
-	first := make([]int, 0, 10)
-
-	const every = 1 << 16 // 65536 lines
-	for sc.Scan() {
-		line++
-		if (line % every) == 0 {
-			if err := ctx.Err(); err != nil {
-				return 0, nil, err
-			}
-		}
-		chunk := sc.Bytes() // split by '\n'; possible trailing '\r' remains
-
-		// Normalize CRLF: strip trailing '\r' before blank check.
-		if n := len(chunk); n > 0 && chunk[n-1] == '\r' {
-			chunk = chunk[:n-1]
-		}
-
-		if checks.IsBlankUnicode(chunk) {
-			total++
-			if len(first) < 10 {
-				first = append(first, line)
-			}
-		}
+	if len(r.first) < maxReportedLines {
+		r.first = append(r.first, lineNo)
 	}
-	if err := sc.Err(); err != nil {
-		return 0, nil, err
+}
+
+func checkContextEveryLine(ctx context.Context, lineNo int) error {
+	if lineNo%ctxCheckEveryLine != 0 {
+		return nil
 	}
-	return total, first, nil
+
+	return ctx.Err()
+}
+
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
 }
 
 func formatEmptyMsg(total int, first []int) string {
@@ -117,18 +114,28 @@ func formatEmptyMsg(total int, first []int) string {
 		fmt.Fprintf(&sb, "found %d empty lines", total)
 	}
 
-	if len(first) > 0 {
-		sb.WriteString(" at lines ")
-		for i, n := range first {
-			if i > 0 {
-				sb.WriteString(", ")
-			}
-			sb.WriteString(strconv.Itoa(n))
-		}
+	if len(first) == 0 {
+		return sb.String()
+	}
 
-		if more := total - len(first); more > 0 {
-			fmt.Fprintf(&sb, " (+%d more)", more)
+	sb.WriteString(" at lines ")
+	sb.WriteString(formatLineNumbers(first))
+
+	if more := total - len(first); more > 0 {
+		fmt.Fprintf(&sb, " (+%d more)", more)
+	}
+
+	return sb.String()
+}
+
+func formatLineNumbers(lines []int) string {
+	var sb strings.Builder
+
+	for i, line := range lines {
+		if i > 0 {
+			sb.WriteString(", ")
 		}
+		sb.WriteString(strconv.Itoa(line))
 	}
 
 	return sb.String()

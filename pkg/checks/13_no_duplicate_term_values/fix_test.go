@@ -28,8 +28,8 @@ func TestFixDuplicateTermValues_NoContent_NoFix(t *testing.T) {
 	if fr.DidChange {
 		t.Fatalf("DidChange should be false for no content")
 	}
-	if asStr(fr.Data) != "" {
-		t.Fatalf("data must stay same, got %q", asStr(fr.Data))
+	if string(fr.Data) != "" {
+		t.Fatalf("data must stay same, got %q", string(fr.Data))
 	}
 	if fr.Note == "" {
 		t.Fatalf("expected note")
@@ -56,12 +56,12 @@ func TestFixDuplicateTermValues_NoHeader_NoFix(t *testing.T) {
 	if fr.DidChange {
 		t.Fatalf("DidChange should be false when we can't fix")
 	}
-	if asStr(fr.Data) != csv {
+	if string(fr.Data) != csv {
 		t.Fatalf("artifact must remain unchanged")
 	}
 }
 
-func TestFixDuplicateTermValues_NoDuplicates_NoFix(t *testing.T) {
+func TestFixDuplicateTermValues_NoDuplicates_NoChange(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -78,16 +78,13 @@ func TestFixDuplicateTermValues_NoDuplicates_NoFix(t *testing.T) {
 	}
 
 	fr, err := fixDuplicateTermValues(ctx, a)
-	if err == nil {
-		t.Fatalf("expected ErrNoFix, got nil")
-	}
-	if err != checks.ErrNoFix {
-		t.Fatalf("expected ErrNoFix, got %v", err)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
 	}
 	if fr.DidChange {
 		t.Fatalf("DidChange should be false (no dups to remove)")
 	}
-	if asStr(fr.Data) != csv {
+	if string(fr.Data) != csv {
 		t.Fatalf("data must remain unchanged when no duplicate terms")
 	}
 	if fr.Note == "" {
@@ -137,7 +134,7 @@ func TestFixDuplicateTermValues_RemovesDuplicateRows_CaseSensitive(t *testing.T)
 		t.Fatalf("expected DidChange=true because duplicates exist")
 	}
 
-	got := asStr(fr.Data)
+	got := string(fr.Data)
 	if got != want {
 		t.Fatalf("fixed content mismatch.\n got:\n%q\nwant:\n%q", got, want)
 	}
@@ -218,7 +215,7 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WithFixPolicy(t *testing.T) {
 	}
 
 	out := runWarnDuplicateTermValues(ctx, a, checks.RunOptions{
-		FixMode:       checks.FixAlways,
+		FixMode:       checks.FixIfFailed,
 		RerunAfterFix: true,
 	})
 
@@ -241,10 +238,7 @@ func TestRunWarnDuplicateTermValues_EndToEnd_WithFixPolicy(t *testing.T) {
 			out.Final.Path, a.Path)
 	}
 
-	if !strings.Contains(out.Result.Message, "removed duplicate term rows") &&
-		!strings.Contains(out.Result.Message, "fixed") {
-		t.Fatalf("expected PASS message after fix to mention fix, got: %q", out.Result.Message)
+	if !out.Final.DidChange {
+		t.Fatalf("expected DidChange=true because we removed duplicate rows")
 	}
 }
-
-func asStr(b []byte) string { return string(b) }

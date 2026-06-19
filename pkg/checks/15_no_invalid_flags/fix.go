@@ -4,174 +4,140 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"errors"
+	"io"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
+type flagFixInput struct {
+	data      []byte
+	bom       []byte
+	lineSep   string
+	keepFinal bool
+	parts     flagFixHeaderParts
+}
+
+type flagFixHeaderParts struct {
+	before []byte
+	line   []byte
+	rest   []byte
+}
+
 func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
+	prep, fr, ok, err := prepareFlagFixInput(ctx, a)
+	if !ok || err != nil {
+		return fr, err
+	}
+
+	records, fr, ok, err := parseFlagFixRecords(ctx, a, prep)
+	if !ok || err != nil {
+		return fr, err
+	}
+
+	outRecs, fr, ok, err := buildFlagFixOutput(ctx, a, records)
+	if !ok || err != nil {
+		return fr, err
+	}
+
+	return serializeFlagFixResult(ctx, a, prep, outRecs)
+}
+
+func prepareFlagFixInput(
+	ctx context.Context,
+	a checks.Artifact,
+) (flagFixInput, checks.FixResult, bool, error) {
 	if err := ctx.Err(); err != nil {
-		return checks.FixResult{}, err
-	}
-	in := a.Data
-	if len(bytes.TrimSpace(in)) == 0 {
-		return checks.NoFix(a, "no usable content to fix")
+		return flagFixInput{}, checks.FixResult{}, false, err
 	}
 
-	// Preserve BOM
-	var bom []byte
-	if bytes.HasPrefix(in, []byte{0xEF, 0xBB, 0xBF}) {
-		bom, in = in[:3], in[3:]
-	}
-	// Line endings / final NL
-	lineSep := checks.DetectLineEnding(in) // "\r\n" | "\n"
-	keepFinal := bytes.HasSuffix(in, []byte("\n"))
-
-	headerStart := 0
-	found := false
-	pos := 0
-	for pos <= len(in) {
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		nlRel := bytes.IndexByte(in[pos:], '\n')
-		var line []byte
-		nextPos := len(in)
-		if nlRel >= 0 {
-			line = in[pos : pos+nlRel]
-			nextPos = pos + nlRel + 1
-		} else {
-			line = in[pos:]
-		}
-		if n := len(line); n > 0 && line[n-1] == '\r' {
-			line = line[:n-1] // strip CR of CRLF
-		}
-		if len(bytes.TrimSpace(line)) != 0 {
-			headerStart = pos
-			found = true
-			break
-		}
-		if nlRel < 0 {
-			break
-		}
-		pos = nextPos
-	}
-	if !found {
-		return checks.NoFix(a, "no header line found")
+	in, bom := checks.SplitUTF8BOM(a.Data)
+	if checks.IsBlankUnicode(in) {
+		fr, err := checks.NoFix(a, "no usable content to fix")
+		return flagFixInput{}, fr, false, err
 	}
 
-	before := in[:headerStart]
-	after := in[headerStart:]
-
-	r := csv.NewReader(bytes.NewReader(after))
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
-
-	records, err := r.ReadAll()
-	if err != nil || len(records) == 0 {
-		if ctx.Err() != nil {
-			return checks.FixResult{}, ctx.Err()
-		}
-		return checks.NoFix(a, "cannot parse CSV with semicolon delimiter")
+	parts, ok, err := findFlagFixHeaderLine(ctx, in)
+	if err != nil {
+		return flagFixInput{}, checks.FixResult{}, false, err
+	}
+	if !ok {
+		fr, err := checks.NoFix(a, "no header line found")
+		return flagFixInput{}, fr, false, err
 	}
 
-	header := records[0]
-	if !checks.AnyNonEmpty(header) {
-		return checks.NoFix(a, "empty header line")
+	return flagFixInput{
+		data:      in,
+		bom:       bom,
+		lineSep:   checks.DetectLineEnding(in),
+		keepFinal: bytes.HasSuffix(in, []byte("\n")),
+		parts:     parts,
+	}, checks.FixResult{}, true, nil
+}
+
+func parseFlagFixRecords(
+	ctx context.Context,
+	a checks.Artifact,
+	prep flagFixInput,
+) ([][]string, checks.FixResult, bool, error) {
+	records, err := readFlagFixRecords(ctx, appendFlagFixHeaderAndRest(prep.parts))
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, checks.FixResult{}, false, ctxErr
+		}
+
+		fr, noFixErr := checks.NoFix(a, "cannot parse CSV with semicolon delimiter")
+		return nil, fr, false, noFixErr
 	}
 
-	colPos := make(map[string]int, len(watchedCols))
-	for _, w := range watchedCols {
-		colPos[w] = -1
-	}
-	for i, h := range header {
-		lc := strings.ToLower(strings.TrimSpace(h))
-		if _, ok := colPos[lc]; ok && colPos[lc] == -1 {
-			colPos[lc] = i
-		}
-	}
-	allMissing := true
-	for _, w := range watchedCols {
-		if colPos[w] >= 0 {
-			allMissing = false
-			break
-		}
-	}
-	if allMissing {
-		return checks.NoFix(a, "no flag columns to normalize")
+	if len(records) == 0 || flagFixIsBlankCSVRecord(records[0]) {
+		fr, err := checks.NoFix(a, "empty header line")
+		return nil, fr, false, err
 	}
 
-	changed := false
-	outRecs := make([][]string, len(records))
+	return records, checks.FixResult{}, true, nil
+}
 
-	outRecs[0] = records[0]
+func buildFlagFixOutput(
+	ctx context.Context,
+	a checks.Artifact,
+	records [][]string,
+) ([][]string, checks.FixResult, bool, error) {
+	flagColumns := flagFixColumns(records[0])
+	if len(flagColumns) == 0 {
+		return nil, flagFixNoChange(a, "no flag columns to normalize"), false, nil
+	}
 
-	for i := 1; i < len(records); i++ {
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		row := records[i]
-		if !checks.AnyNonEmpty(row) {
-			outRecs[i] = nil
-			continue
-		}
-		newRow := make([]string, len(row))
-		copy(newRow, row)
-
-		for _, w := range watchedCols {
-			idx := colPos[w]
-			if idx < 0 || idx >= len(newRow) {
-				continue
-			}
-			orig := newRow[idx]
-			norm := normalizeFlagValue(orig)
-			if norm != orig {
-				newRow[idx] = norm
-				changed = true
-			}
-		}
-		outRecs[i] = newRow
+	outRecs, changed, err := normalizeFlagRecords(ctx, records, flagColumns)
+	if err != nil {
+		return nil, checks.FixResult{}, false, err
 	}
 
 	if !changed {
-		return checks.NoFix(a, "no flag values to normalize")
+		return nil, flagFixNoChange(a, "no flag values to normalize"), false, nil
 	}
 
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	w.Comma = ';'
-	for _, rec := range outRecs {
-		if err := ctx.Err(); err != nil {
-			return checks.FixResult{}, err
-		}
-		if rec == nil {
-			if _, err := buf.WriteString(lineSep); err != nil {
-				return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to write blank line"}, err
-			}
-			continue
-		}
-		if err := w.Write(rec); err != nil {
-			return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to serialize CSV: " + err.Error()}, err
-		}
-	}
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return checks.FixResult{Data: a.Data, Path: "", DidChange: false, Note: "failed to flush CSV: " + err.Error()}, err
+	return outRecs, checks.FixResult{}, true, nil
+}
+
+func serializeFlagFixResult(
+	ctx context.Context,
+	a checks.Artifact,
+	prep flagFixInput,
+	outRecs [][]string,
+) (checks.FixResult, error) {
+	outTail, err := writeFlagFixRecords(ctx, outRecs, prep.lineSep, prep.keepFinal)
+	if err != nil {
+		return checks.FixResult{
+			Data:      a.Data,
+			Path:      "",
+			DidChange: false,
+			Note:      "failed to serialize CSV: " + err.Error(),
+		}, err
 	}
 
-	outTail := buf.Bytes()
-	if lineSep == "\r\n" {
-		outTail = bytes.ReplaceAll(outTail, []byte("\n"), []byte("\r\n"))
-	}
-	if !keepFinal && bytes.HasSuffix(outTail, []byte(lineSep)) {
-		outTail = outTail[:len(outTail)-len(lineSep)]
-	}
-
-	out := make([]byte, 0, len(bom)+len(before)+len(outTail))
-	out = append(out, bom...)
-	out = append(out, before...)
-	out = append(out, outTail...)
+	out := stitchFlagFix(prep.bom, prep.parts.before, outTail)
 
 	return checks.FixResult{
 		Data:      out,
@@ -181,11 +147,220 @@ func fixNoInvalidFlags(ctx context.Context, a checks.Artifact) (checks.FixResult
 	}, nil
 }
 
+func flagFixNoChange(a checks.Artifact, note string) checks.FixResult {
+	return checks.FixResult{
+		Data:      a.Data,
+		Path:      "",
+		DidChange: false,
+		Note:      note,
+	}
+}
+
+func findFlagFixHeaderLine(
+	ctx context.Context,
+	data []byte,
+) (flagFixHeaderParts, bool, error) {
+	pos := 0
+
+	for pos <= len(data) {
+		if err := ctx.Err(); err != nil {
+			return flagFixHeaderParts{}, false, err
+		}
+
+		line, rest, found := bytes.Cut(data[pos:], []byte("\n"))
+		lineForCheck := flagFixTrimTrailingCR(line)
+
+		if !checks.IsBlankUnicode(lineForCheck) {
+			headerEnd := len(data) - len(rest)
+			if !found {
+				headerEnd = len(data)
+			}
+
+			return flagFixHeaderParts{
+				before: data[:pos],
+				line:   data[pos:headerEnd],
+				rest:   data[headerEnd:],
+			}, true, nil
+		}
+
+		if !found {
+			break
+		}
+
+		pos += len(line) + 1
+	}
+
+	return flagFixHeaderParts{}, false, nil
+}
+
+func flagFixTrimTrailingCR(line []byte) []byte {
+	if len(line) > 0 && line[len(line)-1] == '\r' {
+		return line[:len(line)-1]
+	}
+
+	return line
+}
+
+func appendFlagFixHeaderAndRest(parts flagFixHeaderParts) []byte {
+	out := make([]byte, 0, len(parts.line)+len(parts.rest))
+	out = append(out, parts.line...)
+	out = append(out, parts.rest...)
+
+	return out
+}
+
+func readFlagFixRecords(ctx context.Context, data []byte) ([][]string, error) {
+	r := checks.NewSemicolonCSVReader(data)
+
+	var records [][]string
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		rec, err := r.Read()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return records, nil
+			}
+
+			return nil, err
+		}
+
+		records = append(records, rec)
+	}
+}
+
+func writeFlagFixRecords(
+	ctx context.Context,
+	records [][]string,
+	lineSep string,
+	keepFinal bool,
+) ([]byte, error) {
+	var buf bytes.Buffer
+
+	w := csv.NewWriter(&buf)
+	w.Comma = ';'
+
+	for i := range len(records) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if err := w.Write(records[i]); err != nil {
+			return nil, err
+		}
+	}
+
+	w.Flush()
+	if err := w.Error(); err != nil {
+		return nil, err
+	}
+
+	out := buf.Bytes()
+
+	if lineSep == "\r\n" {
+		out = bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
+	}
+
+	if !keepFinal {
+		out = trimFinalCSVWriterNewline(out)
+	}
+
+	return out, nil
+}
+
+func trimFinalCSVWriterNewline(data []byte) []byte {
+	if bytes.HasSuffix(data, []byte("\r\n")) {
+		return data[:len(data)-2]
+	}
+
+	if bytes.HasSuffix(data, []byte("\n")) {
+		return data[:len(data)-1]
+	}
+
+	return data
+}
+
+type flagFixColumn struct {
+	name string
+	pos  int
+}
+
+func flagFixColumns(header []string) []flagFixColumn {
+	watched := make(map[string]struct{}, len(watchedCols))
+	for _, col := range watchedCols {
+		watched[col] = struct{}{}
+	}
+
+	cols := make([]flagFixColumn, 0, len(watchedCols))
+
+	for i, h := range header {
+		name := strings.ToLower(strings.TrimSpace(h))
+		if _, ok := watched[name]; !ok {
+			continue
+		}
+
+		cols = append(cols, flagFixColumn{
+			name: name,
+			pos:  i,
+		})
+	}
+
+	return cols
+}
+
+func normalizeFlagRecords(
+	ctx context.Context,
+	records [][]string,
+	flagColumns []flagFixColumn,
+) ([][]string, bool, error) {
+	out := make([][]string, len(records))
+	out[0] = records[0]
+
+	changed := false
+
+	for i := 1; i < len(records); i++ {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+
+		row := records[i]
+		newRow := make([]string, len(row))
+		copy(newRow, row)
+
+		if flagFixIsBlankCSVRecord(row) {
+			out[i] = newRow
+			continue
+		}
+
+		for _, col := range flagColumns {
+			if col.pos < 0 || col.pos >= len(newRow) {
+				continue
+			}
+
+			orig := newRow[col.pos]
+			normalized := normalizeFlagValue(orig)
+
+			if normalized != orig {
+				newRow[col.pos] = normalized
+				changed = true
+			}
+		}
+
+		out[i] = newRow
+	}
+
+	return out, changed, nil
+}
+
 func normalizeFlagValue(v string) string {
 	trimmed := strings.TrimSpace(v)
 	if trimmed == "" {
 		return v
 	}
+
 	switch strings.ToLower(trimmed) {
 	case "yes", "y", "true", "1":
 		return "yes"
@@ -194,4 +369,23 @@ func normalizeFlagValue(v string) string {
 	default:
 		return v
 	}
+}
+
+func flagFixIsBlankCSVRecord(record []string) bool {
+	for _, field := range record {
+		if !checks.IsBlankUnicode([]byte(field)) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func stitchFlagFix(bom, before, tail []byte) []byte {
+	out := make([]byte, 0, len(bom)+len(before)+len(tail))
+	out = append(out, bom...)
+	out = append(out, before...)
+	out = append(out, tail...)
+
+	return out
 }

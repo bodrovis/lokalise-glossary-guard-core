@@ -1,10 +1,9 @@
 package orphan_locale_descriptions
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/csv"
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 
@@ -12,6 +11,8 @@ import (
 )
 
 const checkName = "warn-orphan-locale-descriptions"
+
+const maxReportedOrphans = 10
 
 func init() {
 	ch, err := checks.NewCheckAdapter(
@@ -41,93 +42,184 @@ func runWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact, opt
 	})
 }
 
-// validateWarnOrphanLocaleDescriptions checks header columns looking for patterns like
-// "<locale>_description" where there is no "<locale>" column in the same header.
-// Example bad: "en_description" exists but "en" doesn't.
 func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return cancelledValidation(err)
 	}
 
-	if len(bytes.TrimSpace(a.Data)) == 0 {
-		return checks.ValidationResult{OK: true, Msg: "no content to validate for orphan locale descriptions"}
+	data := checks.StripUTF8BOM(a.Data)
+	if checks.IsBlankUnicode(data) {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no content to validate for orphan locale descriptions",
+		}
 	}
 
-	br := bufio.NewReader(bytes.NewReader(a.Data))
-	r := csv.NewReader(br)
-	r.Comma = ';'
-	r.FieldsPerRecord = -1
-	r.LazyQuotes = true
+	r := checks.NewSemicolonCSVReader(data)
 
-	var header []string
+	header, res, ok := readOrphanLocaleHeader(ctx, r)
+	if !ok {
+		return res
+	}
+
+	orphans, err := findOrphanLocaleDescriptions(ctx, header)
+	if err != nil {
+		return cancelledValidation(err)
+	}
+
+	if len(orphans) == 0 {
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "no orphan *_description columns",
+		}
+	}
+
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: orphanLocaleDescriptionsMessage(orphans),
+	}
+}
+
+type csvReader interface {
+	Read() ([]string, error)
+}
+
+func readOrphanLocaleHeader(
+	ctx context.Context,
+	r csvReader,
+) ([]string, checks.ValidationResult, bool) {
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, cancelledValidation(err), false
+		}
+
 		rec, err := r.Read()
-		if err != nil || rec == nil {
-			if ctx.Err() != nil {
-				return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: ctx.Err()}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, checks.ValidationResult{
+					OK:  true,
+					Msg: "no header line found (nothing to validate for orphan locale descriptions)",
+				}, false
 			}
-			return checks.ValidationResult{OK: true, Msg: "no header line found (nothing to validate for orphan locale descriptions)"}
+
+			return nil, checks.ValidationResult{
+				OK:  false,
+				Msg: "cannot parse header with semicolon delimiter",
+				Err: err,
+			}, false
 		}
-		nonEmpty := false
-		for _, c := range rec {
-			if strings.TrimSpace(c) != "" {
-				nonEmpty = true
-				break
-			}
+
+		if !isBlankCSVRecord(rec) {
+			return rec, checks.ValidationResult{}, true
 		}
-		if nonEmpty {
-			header = rec
-			break
+	}
+}
+
+func isBlankCSVRecord(record []string) bool {
+	for _, field := range record {
+		if !checks.IsBlankUnicode([]byte(field)) {
+			return false
 		}
 	}
 
-	allColsLC := make(map[string]struct{})
-	orphanCandidates := make(map[string]struct{})
+	return true
+}
 
-	for _, c := range header {
-		nameTrim := strings.TrimSpace(c)
-		lc := strings.ToLower(nameTrim)
-		if lc == "" {
+func findOrphanLocaleDescriptions(ctx context.Context, header []string) ([]string, error) {
+	allCols := make(map[string]struct{}, len(header))
+	var candidateOrder []string
+	seenCandidates := make(map[string]struct{})
+
+	for _, col := range header {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		name := normalizeHeaderCell(col)
+		if name == "" {
 			continue
 		}
-		allColsLC[lc] = struct{}{}
 
-		if strings.HasSuffix(lc, "_description") {
-			base := strings.TrimSuffix(lc, "_description")
-			base = strings.TrimSpace(base)
-			if base != "" {
-				orphanCandidates[base] = struct{}{}
-			}
+		allCols[name] = struct{}{}
+
+		base, ok := descriptionBase(name)
+		if !ok {
+			continue
 		}
+
+		if _, seen := seenCandidates[base]; seen {
+			continue
+		}
+
+		seenCandidates[base] = struct{}{}
+		candidateOrder = append(candidateOrder, base)
 	}
 
-	var orphans []string
-	for base := range orphanCandidates {
-		if _, ok := allColsLC[base]; !ok {
+	orphans := make([]string, 0)
+
+	for _, base := range candidateOrder {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		if _, ok := allCols[base]; !ok {
 			orphans = append(orphans, base)
 		}
 	}
 
-	if len(orphans) == 0 {
-		return checks.ValidationResult{OK: true, Msg: "no orphan *_description columns"}
+	return orphans, nil
+}
+
+func normalizeHeaderCell(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+func descriptionBase(name string) (string, bool) {
+	if !strings.HasSuffix(name, "_description") {
+		return "", false
 	}
 
-	display := orphans
-	if len(display) > 10 {
-		display = display[:10]
+	base := strings.TrimSuffix(name, "_description")
+	base = strings.TrimSpace(base)
+
+	if base == "" {
+		return "", false
 	}
+
+	return base, true
+}
+
+func orphanLocaleDescriptionsMessage(orphans []string) string {
+	display := orphans
+	truncated := false
+
+	if len(display) > maxReportedOrphans {
+		display = display[:maxReportedOrphans]
+		truncated = true
+	}
+
 	var b strings.Builder
 	b.WriteString("orphan *_description columns without matching base locale: ")
 	b.WriteString(strings.Join(display, ", "))
-	if len(orphans) > len(display) {
+
+	if truncated {
 		b.WriteString(" ... (total ")
 		b.WriteString(strconv.Itoa(len(orphans)))
 		b.WriteString(")")
-	} else {
-		b.WriteString(" (total ")
-		b.WriteString(strconv.Itoa(len(orphans)))
-		b.WriteString(")")
+		return b.String()
 	}
 
-	return checks.ValidationResult{OK: false, Msg: b.String()}
+	b.WriteString(" (total ")
+	b.WriteString(strconv.Itoa(len(orphans)))
+	b.WriteString(")")
+
+	return b.String()
+}
+
+func cancelledValidation(err error) checks.ValidationResult {
+	return checks.ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
 }
