@@ -262,30 +262,9 @@ func (p allowedColumnsPlan) isNoOp(header []string) bool {
 }
 
 type declaredLanguages struct {
-	order []string
-	set   map[string]struct{}
-}
-
-func newDeclaredLanguages(langs []string) declaredLanguages {
-	out := declaredLanguages{
-		set: make(map[string]struct{}, len(langs)),
-	}
-
-	for _, lang := range langs {
-		key := normalizeLangKey(lang)
-		if key == "" {
-			continue
-		}
-
-		if _, exists := out.set[key]; exists {
-			continue
-		}
-
-		out.set[key] = struct{}{}
-		out.order = append(out.order, key)
-	}
-
-	return out
+	order  []string
+	set    map[string]struct{}
+	labels map[string]string
 }
 
 func (d declaredLanguages) hasAny() bool {
@@ -298,8 +277,9 @@ func (d declaredLanguages) contains(lang string) bool {
 }
 
 type langPresence struct {
-	base bool
-	desc bool
+	base  bool
+	desc  bool
+	label string
 }
 
 func allowedColumnFromHeader(
@@ -324,15 +304,21 @@ func allowedColumnFromHeader(
 	}
 
 	seenEntry := seen[langCol.key]
+
+	if seenEntry.label == "" {
+		seenEntry.label = langCol.base
+	}
+
 	if langCol.description {
 		seenEntry.desc = true
 	} else {
 		seenEntry.base = true
 	}
+
 	seen[langCol.key] = seenEntry
 
 	return allowedColumn{
-		label: normalizedLangColumnLabel(langCol),
+		label: strings.TrimSpace(name),
 		idx:   idx,
 	}, true
 }
@@ -352,16 +338,21 @@ func (p *allowedColumnsPlan) addMissingDeclaredLanguages(
 	for _, lang := range declared.order {
 		presence := seen[lang]
 
+		label := presence.label
+		if label == "" {
+			label = declared.labels[lang]
+		}
+
 		if !presence.base {
 			p.keep = append(p.keep, allowedColumn{
-				label: lang,
+				label: label,
 				idx:   -1,
 			})
 		}
 
 		if !presence.desc {
 			p.keep = append(p.keep, allowedColumn{
-				label: lang + "_description",
+				label: label + "_description",
 				idx:   -1,
 			})
 		}
@@ -466,6 +457,32 @@ func stitchAllowedColumnsFix(bom, before, outTail []byte) []byte {
 	out = append(out, bom...)
 	out = append(out, before...)
 	out = append(out, outTail...)
+
+	return out
+}
+
+func newDeclaredLanguages(langs []string) declaredLanguages {
+	out := declaredLanguages{
+		set:    make(map[string]struct{}, len(langs)),
+		labels: make(map[string]string, len(langs)),
+	}
+
+	for _, lang := range langs {
+		label := strings.TrimSpace(lang)
+		key := normalizeLangKey(label)
+
+		if key == "" {
+			continue
+		}
+
+		if _, exists := out.set[key]; exists {
+			continue
+		}
+
+		out.set[key] = struct{}{}
+		out.labels[key] = label
+		out.order = append(out.order, key)
+	}
 
 	return out
 }

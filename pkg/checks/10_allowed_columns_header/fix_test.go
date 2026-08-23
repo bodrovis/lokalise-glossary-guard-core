@@ -127,6 +127,58 @@ func Test_fixAllowedColumnsHeader(t *testing.T) {
 			},
 			wantChanged: true,
 		},
+		{
+			name:  "strict langs declared: hyphenated language columns are preserved",
+			langs: []string{"en_US"},
+			inputLines: []string{
+				"term;description;en-US;en-US_description",
+				"hello;desc1;hello-en;desc-en",
+			},
+			wantLines: []string{
+				"term;description;en-US;en-US_description",
+				"hello;desc1;hello-en;desc-en",
+			},
+			wantChanged: false,
+		},
+		{
+			name:  "strict langs declared: preserve hyphen style when adding missing description",
+			langs: []string{"en_US"},
+			inputLines: []string{
+				"term;description;en-US",
+				"hello;desc1;hello-en",
+			},
+			wantLines: []string{
+				"term;description;en-US;en-US_description",
+				"hello;desc1;hello-en;",
+			},
+			wantChanged: true,
+		},
+		{
+			name:  "strict langs declared: use declared hyphen style when language is totally missing",
+			langs: []string{"en-US"},
+			inputLines: []string{
+				"term;description;tags",
+				"hello;desc1;taggy",
+			},
+			wantLines: []string{
+				"term;description;tags;en-US;en-US_description",
+				"hello;desc1;taggy;;",
+			},
+			wantChanged: true,
+		},
+		{
+			name:  "strict langs declared: preserve underscore style when declared language uses hyphen",
+			langs: []string{"en-US"},
+			inputLines: []string{
+				"term;description;en_US;en_US_description",
+				"hello;desc1;hello-en;desc-en",
+			},
+			wantLines: []string{
+				"term;description;en_US;en_US_description",
+				"hello;desc1;hello-en;desc-en",
+			},
+			wantChanged: false,
+		},
 	}
 
 	for _, c := range cases {

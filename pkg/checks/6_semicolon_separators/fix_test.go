@@ -227,6 +227,7 @@ func TestFixToSemicolonsIfConsistent_EscapesQuotes(t *testing.T) {
 		t.Fatalf("converted data is not valid rectangular semicolon CSV: %q", string(fr.Data))
 	}
 }
+
 func TestFixToSemicolonsIfConsistent_PreservesCRLFAndFinalNewline(t *testing.T) {
 	in := "term,description\r\nhello,world\r\n"
 	a := checks.Artifact{Data: []byte(in)}
