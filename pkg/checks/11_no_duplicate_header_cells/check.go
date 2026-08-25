@@ -2,8 +2,6 @@ package duplicate_header_cells
 
 import (
 	"context"
-	"errors"
-	"io"
 	"strconv"
 	"strings"
 
@@ -57,7 +55,13 @@ func validateDuplicateHeaderCells(
 		}
 	}
 
-	header, res, ok := readDuplicateHeader(ctx, data)
+	r := checks.NewSemicolonCSVReader(data)
+
+	header, res, ok := checks.ReadFirstNonBlankHeader(
+		ctx,
+		r,
+		"no header line found (nothing to check for duplicates)",
+	)
 	if !ok {
 		return res
 	}
@@ -78,35 +82,6 @@ func validateDuplicateHeaderCells(
 		OK:  false,
 		Msg: "duplicate header columns: " + strings.Join(dups, ", "),
 	}
-}
-
-func readDuplicateHeader(
-	ctx context.Context,
-	data []byte,
-) ([]string, checks.ValidationResult, bool) {
-	r := checks.NewSemicolonCSVReader(data)
-
-	header, err := checks.ReadFirstNonBlankCSVRecord(ctx, r)
-	if err == nil {
-		return header, checks.ValidationResult{}, true
-	}
-
-	if ctxErr := ctx.Err(); ctxErr != nil {
-		return nil, checks.CancelledValidation(ctxErr), false
-	}
-
-	if errors.Is(err, io.EOF) {
-		return nil, checks.ValidationResult{
-			OK:  true,
-			Msg: "no header line found (nothing to check for duplicates)",
-		}, false
-	}
-
-	return nil, checks.ValidationResult{
-		OK:  false,
-		Msg: "cannot parse header with semicolon delimiter",
-		Err: err,
-	}, false
 }
 
 type duplicateHeaderStat struct {

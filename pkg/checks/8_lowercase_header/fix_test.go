@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -167,5 +168,191 @@ func TestFixLowercaseHeader_ContextCancelled(t *testing.T) {
 	}
 	if fr.DidChange {
 		t.Fatalf("expected DidChange=false")
+	}
+}
+
+func TestLowercaseKnownHeaderColumn(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "known lowercase",
+			input:  "term",
+			want:   "term",
+			wantOK: true,
+		},
+		{
+			name:   "known uppercase",
+			input:  "TERM",
+			want:   "term",
+			wantOK: true,
+		},
+		{
+			name:   "known mixed case",
+			input:  "caseSensitive",
+			want:   "casesensitive",
+			wantOK: true,
+		},
+		{
+			name:   "unknown header",
+			input:  "CUSTOM_HEADER",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "empty",
+			input:  "",
+			want:   "",
+			wantOK: false,
+		},
+		{
+			name:   "known header with outer spaces is not handled here",
+			input:  " Term ",
+			want:   "",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := lowercaseKnownHeaderColumn(tt.input)
+
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+
+			if got != tt.want {
+				t.Fatalf("got = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLowercaseKnownHeaderColumns(t *testing.T) {
+	record := []string{
+		"Term",
+		"CUSTOM_HEADER",
+		"Description",
+		"casesensitive",
+	}
+
+	changed, err := lowercaseKnownHeaderColumns(
+		context.Background(),
+		record,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+
+	want := []string{
+		"term",
+		"CUSTOM_HEADER",
+		"description",
+		"casesensitive",
+	}
+
+	if !reflect.DeepEqual(record, want) {
+		t.Fatalf("record = %#v, want %#v", record, want)
+	}
+}
+
+func TestLowercaseKnownHeaderColumns_NoChange(t *testing.T) {
+	record := []string{
+		"term",
+		"description",
+		"CUSTOM_HEADER",
+	}
+
+	changed, err := lowercaseKnownHeaderColumns(
+		context.Background(),
+		record,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if changed {
+		t.Fatal("changed = true, want false")
+	}
+}
+
+func TestLowercaseKnownHeaderColumns_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	record := []string{"Term"}
+
+	changed, err := lowercaseKnownHeaderColumns(
+		ctx,
+		record,
+	)
+
+	if changed {
+		t.Fatal("changed = true, want false")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestFixLowercaseHeader_PreservesQuotedUnknownHeader(t *testing.T) {
+	in := `"CUSTOM;HEADER";Term;Description` + "\n" +
+		"x;y;z\n"
+
+	want := `"CUSTOM;HEADER";term;description` + "\n" +
+		"x;y;z\n"
+
+	fr, err := fixLowercaseHeader(
+		context.Background(),
+		checks.Artifact{Data: []byte(in)},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fr.DidChange {
+		t.Fatal("DidChange = false, want true")
+	}
+
+	if string(fr.Data) != want {
+		t.Fatalf(
+			"Data mismatch\ngot:  %q\nwant: %q",
+			fr.Data,
+			want,
+		)
+	}
+}
+
+func TestFixLowercaseHeader_OnlyUnknownHeaders_NoChange(t *testing.T) {
+	input := "FOO;BAR;BAZ\nx;y;z\n"
+
+	a := checks.Artifact{Data: []byte(input)}
+
+	fr, err := fixLowercaseHeader(
+		context.Background(),
+		a,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if fr.DidChange {
+		t.Fatal("DidChange = true, want false")
+	}
+
+	if !bytes.Equal(fr.Data, a.Data) {
+		t.Fatalf("data changed: %q", fr.Data)
+	}
+
+	if !strings.Contains(fr.Note, "already lowercase") {
+		t.Fatalf("unexpected Note: %q", fr.Note)
 	}
 }

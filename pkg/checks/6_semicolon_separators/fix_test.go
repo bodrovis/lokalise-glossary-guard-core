@@ -263,3 +263,199 @@ func firstLine(s string) string {
 	line, _, _ := strings.Cut(s, "\n")
 	return line
 }
+
+func TestFixToSemicolonsIfConsistent_BlankContent_NoFix(t *testing.T) {
+	input := " \n\t \n"
+
+	a := checks.Artifact{Data: []byte(input)}
+
+	fr, err := fixToSemicolonsIfConsistent(
+		context.Background(),
+		a,
+	)
+
+	if !errors.Is(err, checks.ErrNoFix) {
+		t.Fatalf("err = %v, want ErrNoFix", err)
+	}
+
+	if fr.DidChange {
+		t.Fatal("DidChange = true, want false")
+	}
+
+	if string(fr.Data) != input {
+		t.Fatalf("Data = %q, want unchanged %q", fr.Data, input)
+	}
+
+	if !strings.Contains(fr.Note, "no usable content") {
+		t.Fatalf("unexpected Note: %q", fr.Note)
+	}
+}
+
+func TestFixToSemicolonsIfConsistent_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fr, err := fixToSemicolonsIfConsistent(
+		ctx,
+		checks.Artifact{
+			Data: []byte("a,b\n1,2\n"),
+		},
+	)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+
+	if fr.DidChange {
+		t.Fatal("DidChange = true, want false")
+	}
+}
+
+func TestFixToSemicolonsIfConsistent_PreservesBOM(t *testing.T) {
+	input := "\xEF\xBB\xBFterm,description\nfoo,bar\n"
+	want := "\xEF\xBB\xBFterm;description\nfoo;bar\n"
+
+	fr, err := fixToSemicolonsIfConsistent(
+		context.Background(),
+		checks.Artifact{Data: []byte(input)},
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	if !fr.DidChange {
+		t.Fatal("DidChange = false, want true")
+	}
+
+	if string(fr.Data) != want {
+		t.Fatalf(
+			"Data = %q, want %q",
+			fr.Data,
+			want,
+		)
+	}
+}
+
+func TestFixToSemicolonsIfConsistent_PreservesNoFinalNewline(t *testing.T) {
+	input := "term,description\nfoo,bar"
+	want := "term;description\nfoo;bar"
+
+	fr, err := fixToSemicolonsIfConsistent(
+		context.Background(),
+		checks.Artifact{Data: []byte(input)},
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	if string(fr.Data) != want {
+		t.Fatalf(
+			"Data = %q, want %q",
+			fr.Data,
+			want,
+		)
+	}
+}
+
+func TestFixToSemicolonsIfConsistent_CRLFInsideQuotedField(t *testing.T) {
+	input := "" +
+		"term,description\r\n" +
+		"foo,\"line1\r\nline2\"\r\n"
+
+	want := "" +
+		"term;description\r\n" +
+		"foo;\"line1\r\nline2\"\r\n"
+
+	fr, err := fixToSemicolonsIfConsistent(
+		context.Background(),
+		checks.Artifact{Data: []byte(input)},
+	)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+
+	if string(fr.Data) != want {
+		t.Fatalf(
+			"Data mismatch\ngot:  %q\nwant: %q",
+			fr.Data,
+			want,
+		)
+	}
+
+	if bytes.Contains(fr.Data, []byte("\r\r\n")) {
+		t.Fatalf(
+			"output contains corrupted CRLF: %q",
+			fr.Data,
+		)
+	}
+}
+
+func TestDetectConvertibleDelimiter(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     string
+		wantOK   bool
+		wantName string
+	}{
+		{
+			name:     "comma",
+			data:     "a,b\n1,2\n",
+			wantOK:   true,
+			wantName: "commas",
+		},
+		{
+			name:     "tab",
+			data:     "a\tb\n1\t2\n",
+			wantOK:   true,
+			wantName: "tabs",
+		},
+		{
+			name:   "ambiguous",
+			data:   "a,b\tc,d\ne,f\tg,h\n",
+			wantOK: false,
+		},
+		{
+			name:   "neither",
+			data:   "abc\ndef\n",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok, err := detectConvertibleDelimiter(
+				context.Background(),
+				[]byte(tt.data),
+			)
+			if err != nil {
+				t.Fatalf("unexpected err: %v", err)
+			}
+
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+
+			if ok && got.name != tt.wantName {
+				t.Fatalf(
+					"name = %q, want %q",
+					got.name,
+					tt.wantName,
+				)
+			}
+		})
+	}
+}
+
+func TestDetectAlternativeDelimiters_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := detectAlternativeDelimiters(
+		ctx,
+		[]byte("a,b\n1,2\n"),
+	)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}

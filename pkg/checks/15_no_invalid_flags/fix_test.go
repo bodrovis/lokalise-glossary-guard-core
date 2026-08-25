@@ -2,6 +2,8 @@ package invalid_flags
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -302,3 +304,235 @@ func TestRunNoInvalidFlags_EndToEnd_WithFixPolicy_NotFullyFixable_FAIL(t *testin
 }
 
 func asStr(b []byte) string { return string(b) }
+
+func TestPrepareFlagFixInput_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, _, err := prepareFlagFixInput(ctx, checks.Artifact{
+		Data: []byte("term;forbidden\nfoo;yes\n"),
+	})
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestPrepareFlagFixInput_PreservesBOMAndLineFormat(t *testing.T) {
+	a := checks.Artifact{
+		Data: []byte("\xEF\xBB\xBF\nterm;forbidden\r\nfoo;YES\r\n"),
+	}
+
+	prep, note, err := prepareFlagFixInput(
+		context.Background(),
+		a,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if note != "" {
+		t.Fatalf("note = %q, want empty", note)
+	}
+
+	if string(prep.bom) != "\xEF\xBB\xBF" {
+		t.Fatalf("bom = %v, want UTF-8 BOM", prep.bom)
+	}
+
+	if prep.lineSep != "\r\n" {
+		t.Fatalf("lineSep = %q, want CRLF", prep.lineSep)
+	}
+
+	if !prep.keepFinal {
+		t.Fatal("keepFinal = false, want true")
+	}
+
+	if string(prep.parts.Before) != "\n" {
+		t.Fatalf("Before = %q, want %q", prep.parts.Before, "\n")
+	}
+}
+
+func TestParseFlagFixRecords_EmptyHeader(t *testing.T) {
+	prep := flagFixInput{
+		parts: checks.PhysicalLineParts{
+			Line: []byte(";;\n"),
+		},
+	}
+
+	records, note, err := parseFlagFixRecords(
+		context.Background(),
+		prep,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if records != nil {
+		t.Fatalf("records = %v, want nil", records)
+	}
+
+	if note != "empty header line" {
+		t.Fatalf("note = %q, want %q", note, "empty header line")
+	}
+}
+
+func TestNormalizeFlagValue(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"yes", "yes"},
+		{"YES", "yes"},
+		{" y ", "yes"},
+		{"true", "yes"},
+		{"TRUE", "yes"},
+		{"1", "yes"},
+
+		{"no", "no"},
+		{"NO", "no"},
+		{" n ", "no"},
+		{"false", "no"},
+		{"FALSE", "no"},
+		{"0", "no"},
+
+		{"", ""},
+		{"   ", "   "},
+		{"maybe", "maybe"},
+		{"2", "2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := normalizeFlagValue(tt.input)
+
+			if got != tt.want {
+				t.Fatalf(
+					"normalizeFlagValue(%q) = %q, want %q",
+					tt.input,
+					got,
+					tt.want,
+				)
+			}
+		})
+	}
+}
+
+func TestNormalizeFlagRecords_BlankAndShortRows(t *testing.T) {
+	records := [][]string{
+		{"term", "casesensitive", "forbidden"},
+		{"foo", "YES", "FALSE"},
+		{"", "", ""},
+		{"short"},
+	}
+
+	cols := []flagColumn{
+		{name: "casesensitive", pos: 1},
+		{name: "forbidden", pos: 2},
+	}
+
+	got, changed, err := normalizeFlagRecords(
+		context.Background(),
+		records,
+		cols,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !changed {
+		t.Fatal("changed = false, want true")
+	}
+
+	want := [][]string{
+		{"term", "casesensitive", "forbidden"},
+		{"foo", "yes", "no"},
+		{"", "", ""},
+		{"short"},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got = %#v, want %#v", got, want)
+	}
+}
+
+func TestNormalizeFlagRecords_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	records := [][]string{
+		{"term", "forbidden"},
+		{"foo", "YES"},
+	}
+
+	got, changed, err := normalizeFlagRecords(
+		ctx,
+		records,
+		[]flagColumn{
+			{name: "forbidden", pos: 1},
+		},
+	)
+
+	if got != nil {
+		t.Fatalf("got = %v, want nil", got)
+	}
+
+	if changed {
+		t.Fatal("changed = true, want false")
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestFixNoInvalidFlags_PreservesBOMAndCRLF(t *testing.T) {
+	input := "\xEF\xBB\xBF" +
+		"term;forbidden\r\n" +
+		"foo;YES\r\n"
+
+	want := "\xEF\xBB\xBF" +
+		"term;forbidden\r\n" +
+		"foo;yes\r\n"
+
+	fr, err := fixNoInvalidFlags(
+		context.Background(),
+		checks.Artifact{
+			Data: []byte(input),
+			Path: "test.csv",
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !fr.DidChange {
+		t.Fatal("DidChange = false, want true")
+	}
+
+	if string(fr.Data) != want {
+		t.Fatalf(
+			"Data = %q, want %q",
+			fr.Data,
+			want,
+		)
+	}
+}
+
+func TestFixNoInvalidFlags_PreservesNoFinalNewline(t *testing.T) {
+	input := "term;forbidden\nfoo;YES"
+	want := "term;forbidden\nfoo;yes"
+
+	fr, err := fixNoInvalidFlags(
+		context.Background(),
+		checks.Artifact{
+			Data: []byte(input),
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if string(fr.Data) != want {
+		t.Fatalf("Data = %q, want %q", fr.Data, want)
+	}
+}

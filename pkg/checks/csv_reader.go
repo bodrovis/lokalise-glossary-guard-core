@@ -26,7 +26,7 @@ func NewSemicolonCSVReaderWithCtx(
 		}, false
 	}
 
-	if len(bytes.TrimSpace(a.Data)) == 0 {
+	if IsBlankUnicode(a.Data) {
 		if emptyMessage == "" {
 			emptyMessage = "no usable content"
 		}
@@ -120,10 +120,6 @@ func ReadFirstNonBlankSemicolonHeader(
 
 	record, err := ReadFirstNonBlankCSVRecord(ctx, r)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, CancelledValidation(ctxErr), false
-		}
-
 		return nil, ValidationResult{
 			OK:  false,
 			Msg: "cannot parse header with semicolon delimiter",
@@ -167,17 +163,17 @@ func ReadSemicolonHeader(
 	a Artifact,
 	emptyMessage string,
 ) ([]string, ValidationResult, bool) {
-	r, res, ok := NewSemicolonCSVReaderWithCtx(ctx, a, emptyMessage)
+	r, res, ok := NewSemicolonCSVReaderWithCtx(
+		ctx,
+		a,
+		emptyMessage,
+	)
 	if !ok {
 		return nil, res, false
 	}
 
 	header, err := r.Read()
-	if err != nil || len(header) == 0 {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, CancelledValidation(ctxErr), false
-		}
-
+	if err != nil {
 		return nil, ValidationResult{
 			OK:  false,
 			Msg: "cannot parse header with semicolon delimiter",
@@ -190,7 +186,7 @@ func ReadSemicolonHeader(
 
 func ReadAllCSVRecords(
 	ctx context.Context,
-	r *csv.Reader,
+	r CSVReader,
 ) ([][]string, error) {
 	var records [][]string
 

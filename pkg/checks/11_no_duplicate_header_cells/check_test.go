@@ -2,11 +2,29 @@ package duplicate_header_cells
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
+
+type errorCSVReader struct {
+	err error
+}
+
+func (r errorCSVReader) Read() ([]string, error) {
+	return nil, r.err
+}
+
+type cancellingCSVReader struct {
+	cancel context.CancelFunc
+}
+
+func (r cancellingCSVReader) Read() ([]string, error) {
+	r.cancel()
+	return nil, errors.New("read failed")
+}
 
 func Test_validateDuplicateHeaderCells(t *testing.T) {
 	t.Parallel()
@@ -73,6 +91,12 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 			wantOK:  false,
 			wantSub: "duplicate header columns: term(2)",
 		},
+		{
+			name:    "non-empty CSV containing only empty header cells",
+			csv:     ";;;\n",
+			wantOK:  true,
+			wantSub: "no header line found",
+		},
 	}
 
 	for _, c := range cases {
@@ -101,5 +125,160 @@ func Test_validateDuplicateHeaderCells(t *testing.T) {
 				t.Fatalf("expected non-system WARN (Err=nil), got Err=%v", res.Err)
 			}
 		})
+	}
+}
+
+func TestReadFirstNonBlankHeader_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r := checks.NewSemicolonCSVReader(
+		[]byte("term;description"),
+	)
+
+	header, res, ok := checks.ReadFirstNonBlankHeader(
+		ctx,
+		r,
+		"no header",
+	)
+
+	if ok {
+		t.Fatal("ok = true, want false")
+	}
+
+	if header != nil {
+		t.Fatalf("header = %v, want nil", header)
+	}
+
+	if res.OK {
+		t.Fatal("res.OK = true, want false")
+	}
+
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf(
+			"res.Err = %v, want context.Canceled",
+			res.Err,
+		)
+	}
+
+	if res.Msg != "validation cancelled" {
+		t.Fatalf(
+			"res.Msg = %q, want %q",
+			res.Msg,
+			"validation cancelled",
+		)
+	}
+}
+
+func TestReadFirstNonBlankHeader_EOF(t *testing.T) {
+	r := checks.NewSemicolonCSVReader(
+		[]byte(";;;\n"),
+	)
+
+	header, res, ok := checks.ReadFirstNonBlankHeader(
+		context.Background(),
+		r,
+		"no header found",
+	)
+
+	if ok {
+		t.Fatal("ok = true, want false")
+	}
+
+	if header != nil {
+		t.Fatalf("header = %v, want nil", header)
+	}
+
+	if !res.OK {
+		t.Fatalf(
+			"res.OK = false, want true; Err=%v",
+			res.Err,
+		)
+	}
+
+	if res.Err != nil {
+		t.Fatalf("res.Err = %v, want nil", res.Err)
+	}
+
+	if res.Msg != "no header found" {
+		t.Fatalf(
+			"res.Msg = %q, want %q",
+			res.Msg,
+			"no header found",
+		)
+	}
+}
+
+func TestReadFirstNonBlankHeader_ParseError(t *testing.T) {
+	parseErr := errors.New("boom")
+
+	header, res, ok := checks.ReadFirstNonBlankHeader(
+		context.Background(),
+		errorCSVReader{err: parseErr},
+		"no header found",
+	)
+
+	if ok {
+		t.Fatal("ok = true, want false")
+	}
+
+	if header != nil {
+		t.Fatalf("header = %v, want nil", header)
+	}
+
+	if res.OK {
+		t.Fatal("res.OK = true, want false")
+	}
+
+	if !errors.Is(res.Err, parseErr) {
+		t.Fatalf(
+			"res.Err = %v, want %v",
+			res.Err,
+			parseErr,
+		)
+	}
+
+	if res.Msg != "cannot parse header with semicolon delimiter" {
+		t.Fatalf(
+			"res.Msg = %q, want parse failure message",
+			res.Msg,
+		)
+	}
+}
+
+func TestReadFirstNonBlankHeader_ContextCancelledDuringRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	header, res, ok := checks.ReadFirstNonBlankHeader(
+		ctx,
+		cancellingCSVReader{cancel: cancel},
+		"no header found",
+	)
+
+	if ok {
+		t.Fatal("ok = true, want false")
+	}
+
+	if header != nil {
+		t.Fatalf("header = %v, want nil", header)
+	}
+
+	if res.OK {
+		t.Fatal("res.OK = true, want false")
+	}
+
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf(
+			"res.Err = %v, want context.Canceled",
+			res.Err,
+		)
+	}
+
+	if res.Msg != "validation cancelled" {
+		t.Fatalf(
+			"res.Msg = %q, want %q",
+			res.Msg,
+			"validation cancelled",
+		)
 	}
 }

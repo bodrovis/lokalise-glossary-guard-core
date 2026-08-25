@@ -3,6 +3,7 @@ package lowercase_header
 import (
 	"bytes"
 	"context"
+	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
@@ -119,16 +120,13 @@ func lowercaseKnownHeaderColumns(
 }
 
 func lowercaseKnownHeaderColumn(col string) (string, bool) {
-	normalized := checks.NormalizeStr(col)
-	if normalized == "" {
+	lower := strings.ToLower(col)
+
+	if _, ok := checks.KnownHeaders[lower]; !ok {
 		return "", false
 	}
 
-	if _, ok := checks.KnownHeaders[normalized]; !ok {
-		return "", false
-	}
-
-	return normalized, true
+	return lower, true
 }
 
 func stitchHeaderFix(

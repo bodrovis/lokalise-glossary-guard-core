@@ -2,11 +2,50 @@ package no_empty_term_values
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strings"
 	"testing"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
+
+type failingCSVReader struct {
+	records [][]string
+	err     error
+	pos     int
+}
+
+func (r *failingCSVReader) Read() ([]string, error) {
+	if r.pos < len(r.records) {
+		rec := r.records[r.pos]
+		r.pos++
+		return rec, nil
+	}
+
+	return nil, r.err
+}
+
+type csvReadResult struct {
+	record []string
+	err    error
+}
+
+type scriptedCSVReader struct {
+	results []csvReadResult
+	pos     int
+}
+
+func (r *scriptedCSVReader) Read() ([]string, error) {
+	if r.pos >= len(r.results) {
+		return nil, io.EOF
+	}
+
+	result := r.results[r.pos]
+	r.pos++
+
+	return result.record, result.err
+}
 
 func TestValidateNoEmptyTermValues_AllGood(t *testing.T) {
 	t.Parallel()
@@ -82,7 +121,26 @@ func TestValidateNoEmptyTermValues_EmptyTerms_Fail(t *testing.T) {
 	}
 }
 
-func TestValidateNoEmptyTermValues_TooMany_EarlyCut(t *testing.T) {
+func TestEmptyTermRowsMessage_TruncatesAtLimit(t *testing.T) {
+	rows := []int{2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}
+
+	msg := emptyTermRowsMessage(rows)
+
+	if !strings.Contains(msg, "2, 3, 4, 5, 6, 7, 8, 9, 10, 11") {
+		t.Fatalf("unexpected listed rows: %q", msg)
+	}
+
+	if strings.Contains(msg, ", 12") ||
+		strings.Contains(msg, ", 13") {
+		t.Fatalf("message should truncate rows: %q", msg)
+	}
+
+	if !strings.Contains(msg, "... (total 12)") {
+		t.Fatalf("missing total: %q", msg)
+	}
+}
+
+func TestValidateNoEmptyTermValues_TooMany_TruncatesMessage(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -108,11 +166,6 @@ func TestValidateNoEmptyTermValues_TooMany_EarlyCut(t *testing.T) {
 
 	if !strings.Contains(res.Msg, "total 15") {
 		t.Fatalf("expected message to include total 15, got: %q", res.Msg)
-	}
-
-	rowCountListed := countRowNumbersInMsg(res.Msg)
-	if rowCountListed > 10 {
-		t.Fatalf("expected at most 10 row numbers in message, got %d in %q", rowCountListed, res.Msg)
 	}
 }
 
@@ -247,25 +300,206 @@ func TestValidateNoEmptyTermValues_ShortRowMissingTermCell_Fail(t *testing.T) {
 	}
 }
 
-// this helper is just a cheap way to approximate "how many row numbers did we list"
-// it's fine for this test; we don't need perfect parsing, just length cap sanity.
-func countRowNumbersInMsg(msg string) int {
-	beforeTotal := msg
-	if idx := strings.Index(msg, "(total"); idx >= 0 {
-		beforeTotal = strings.TrimSpace(msg[:idx])
+func TestValidateNoEmptyTermValues_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res := validateNoEmptyTermValues(ctx, checks.Artifact{
+		Data: []byte("term;description\nhello;ok\n"),
+		Path: "test.csv",
+	})
+
+	if res.OK {
+		t.Fatal("expected OK=false")
 	}
 
-	colonIdx := strings.Index(beforeTotal, ":")
-	if colonIdx < 0 {
-		return 0
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf("Err = %v, want context.Canceled", res.Err)
 	}
-	listPart := strings.TrimSpace(beforeTotal[colonIdx+1:]) // "2, 3, 4 ..."
-	listPart = strings.TrimSuffix(listPart, "...")
-	listPart = strings.TrimSpace(listPart)
 
-	if listPart == "" {
-		return 0
+	if res.Msg != "validation cancelled" {
+		t.Fatalf("Msg = %q, want %q", res.Msg, "validation cancelled")
 	}
-	parts := strings.Split(listPart, ",")
-	return len(parts)
+}
+
+func TestFindRowsWithEmptyTerm_ReadError(t *testing.T) {
+	readErr := errors.New("boom")
+
+	r := &failingCSVReader{
+		records: [][]string{
+			{"hello", "ok"},
+		},
+		err: readErr,
+	}
+
+	rows, err := findRowsWithEmptyTerm(
+		context.Background(),
+		r,
+		1,
+		0,
+	)
+
+	if rows != nil {
+		t.Fatalf("rows = %v, want nil", rows)
+	}
+
+	if !errors.Is(err, readErr) {
+		t.Fatalf("err = %v, want %v", err, readErr)
+	}
+}
+
+func TestFindRowsWithEmptyTerm_EOF(t *testing.T) {
+	r := &failingCSVReader{
+		records: [][]string{
+			{"hello", "ok"},
+			{"", "bad"},
+		},
+		err: io.EOF,
+	}
+
+	rows, err := findRowsWithEmptyTerm(
+		context.Background(),
+		r,
+		1,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rows) != 1 || rows[0] != 3 {
+		t.Fatalf("rows = %v, want [3]", rows)
+	}
+}
+
+func TestFindRowsWithEmptyTerm_BlankRecordsAreSkipped(t *testing.T) {
+	r := &scriptedCSVReader{
+		results: []csvReadResult{
+			{record: []string{"hello", "ok"}},
+			{record: []string{"", ""}},
+			{record: []string{"world", "ok"}},
+		},
+	}
+
+	rows, err := findRowsWithEmptyTerm(
+		context.Background(),
+		r,
+		1,
+		0,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(rows) != 0 {
+		t.Fatalf("rows = %v, want none", rows)
+	}
+}
+
+func TestHasEmptyTermValue(t *testing.T) {
+	tests := []struct {
+		name    string
+		record  []string
+		termCol int
+		want    bool
+	}{
+		{
+			name:    "non-empty term",
+			record:  []string{"hello"},
+			termCol: 0,
+			want:    false,
+		},
+		{
+			name:    "empty term",
+			record:  []string{""},
+			termCol: 0,
+			want:    true,
+		},
+		{
+			name:    "spaces only",
+			record:  []string{"   "},
+			termCol: 0,
+			want:    true,
+		},
+		{
+			name:    "zero width only",
+			record:  []string{"\u200B"},
+			termCol: 0,
+			want:    true,
+		},
+		{
+			name:    "term column beyond row width",
+			record:  []string{"description"},
+			termCol: 1,
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := hasEmptyTermValue(tt.record, tt.termCol)
+
+			if got != tt.want {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFindRowsWithEmptyTerm_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r := &scriptedCSVReader{
+		results: []csvReadResult{
+			{record: []string{"hello"}},
+		},
+	}
+
+	rows, err := findRowsWithEmptyTerm(
+		ctx,
+		r,
+		ctxCheckEveryRows,
+		0,
+	)
+
+	if rows != nil {
+		t.Fatalf("rows = %v, want nil", rows)
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+type cancellingCSVReader struct {
+	cancel context.CancelFunc
+}
+
+func (r *cancellingCSVReader) Read() ([]string, error) {
+	r.cancel()
+	return nil, errors.New("read failed")
+}
+
+func TestFindRowsWithEmptyTerm_ContextCancelledDuringRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r := &cancellingCSVReader{
+		cancel: cancel,
+	}
+
+	rows, err := findRowsWithEmptyTerm(
+		ctx,
+		r,
+		1,
+		0,
+	)
+
+	if rows != nil {
+		t.Fatalf("rows = %v, want nil", rows)
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
 }

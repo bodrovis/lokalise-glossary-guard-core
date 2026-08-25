@@ -41,7 +41,7 @@ type CheckResult struct {
 }
 
 // FixResult describes what an auto-fix did to the artifact (if anything).
-// NOTE: Data/Path represent the NEW state to propagate downstream.
+// Data/Path represent the NEW state to propagate downstream.
 type FixResult struct {
 	Data      []byte // new file data after fix (may be identical to input)
 	Path      string // new file path; empty means "keep original"

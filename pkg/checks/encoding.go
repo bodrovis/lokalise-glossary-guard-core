@@ -50,9 +50,9 @@ func IsBlankUnicode(b []byte) bool {
 }
 
 func SplitUTF8BOM(data []byte) ([]byte, []byte) {
-	if !bytes.HasPrefix(data, []byte{0xEF, 0xBB, 0xBF}) {
+	if !bytes.HasPrefix(data, utf8BOM) {
 		return data, nil
 	}
 
-	return data[3:], []byte{0xEF, 0xBB, 0xBF}
+	return data[len(utf8BOM):], []byte{0xEF, 0xBB, 0xBF}
 }

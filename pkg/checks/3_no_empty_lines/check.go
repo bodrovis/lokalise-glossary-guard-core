@@ -109,7 +109,11 @@ func formatEmptyMsg(total int, first []int) string {
 		return sb.String()
 	}
 
-	sb.WriteString(" at lines ")
+	if len(first) == 1 {
+		sb.WriteString(" at line ")
+	} else {
+		sb.WriteString(" at lines ")
+	}
 	sb.WriteString(formatLineNumbers(first))
 
 	if more := total - len(first); more > 0 {

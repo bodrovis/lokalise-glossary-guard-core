@@ -2,6 +2,8 @@ package term_description_header
 
 import (
 	"context"
+	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -209,5 +211,295 @@ func TestFixTermDescriptionHeader_DoesNotDropDuplicateTermLikeColumns(t *testing
 	want := "term;description;term;context\nT;D;T2;C"
 	if got := string(res.Data); got != want {
 		t.Fatalf("fixed data mismatch:\n got:  %q\n want: %q", got, want)
+	}
+}
+
+func TestBuildTermDescriptionPlan(t *testing.T) {
+	tests := []struct {
+		name            string
+		header          []string
+		wantTerm        bool
+		wantDescription bool
+		wantTermIndex   int
+		wantDescIndex   int
+		wantRest        []int
+		wantAlreadyOK   bool
+	}{
+		{
+			name:            "already correct",
+			header:          []string{"term", "description", "context"},
+			wantTerm:        true,
+			wantDescription: true,
+			wantTermIndex:   0,
+			wantDescIndex:   1,
+			wantRest:        []int{2},
+			wantAlreadyOK:   true,
+		},
+		{
+			name:            "swapped",
+			header:          []string{"description", "term", "context"},
+			wantTerm:        true,
+			wantDescription: true,
+			wantTermIndex:   1,
+			wantDescIndex:   0,
+			wantRest:        []int{2},
+			wantAlreadyOK:   false,
+		},
+		{
+			name:            "missing term",
+			header:          []string{"description", "context"},
+			wantTerm:        false,
+			wantDescription: true,
+			wantTermIndex:   -1,
+			wantDescIndex:   0,
+			wantRest:        []int{1},
+			wantAlreadyOK:   false,
+		},
+		{
+			name:            "missing both",
+			header:          []string{"id", "context"},
+			wantTerm:        false,
+			wantDescription: false,
+			wantTermIndex:   -1,
+			wantDescIndex:   -1,
+			wantRest:        []int{0, 1},
+			wantAlreadyOK:   false,
+		},
+		{
+			name:            "first duplicate wins",
+			header:          []string{"term", "foo", "term", "description"},
+			wantTerm:        true,
+			wantDescription: true,
+			wantTermIndex:   0,
+			wantDescIndex:   3,
+			wantRest:        []int{1, 2},
+			wantAlreadyOK:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildTermDescriptionPlan(tt.header)
+
+			if got.hasTerm != tt.wantTerm {
+				t.Fatalf("hasTerm = %v, want %v", got.hasTerm, tt.wantTerm)
+			}
+
+			if got.hasDescription != tt.wantDescription {
+				t.Fatalf(
+					"hasDescription = %v, want %v",
+					got.hasDescription,
+					tt.wantDescription,
+				)
+			}
+
+			if got.termIndex != tt.wantTermIndex {
+				t.Fatalf(
+					"termIndex = %d, want %d",
+					got.termIndex,
+					tt.wantTermIndex,
+				)
+			}
+
+			if got.descIndex != tt.wantDescIndex {
+				t.Fatalf(
+					"descIndex = %d, want %d",
+					got.descIndex,
+					tt.wantDescIndex,
+				)
+			}
+
+			if !reflect.DeepEqual(got.restIndexes, tt.wantRest) {
+				t.Fatalf(
+					"restIndexes = %v, want %v",
+					got.restIndexes,
+					tt.wantRest,
+				)
+			}
+
+			if got.alreadyOK != tt.wantAlreadyOK {
+				t.Fatalf(
+					"alreadyOK = %v, want %v",
+					got.alreadyOK,
+					tt.wantAlreadyOK,
+				)
+			}
+		})
+	}
+}
+
+func TestBuildTermDescriptionPlan_NormalizedNamesCountAsAlreadyOK(t *testing.T) {
+	plan := buildTermDescriptionPlan(
+		[]string{" TERM ", " Description ", "context"},
+	)
+
+	if !plan.alreadyOK {
+		t.Fatal("alreadyOK = false, want true")
+	}
+
+	if plan.termIndex != 0 {
+		t.Fatalf("termIndex = %d, want 0", plan.termIndex)
+	}
+
+	if plan.descIndex != 1 {
+		t.Fatalf("descIndex = %d, want 1", plan.descIndex)
+	}
+}
+
+func TestApplyTermDescriptionPlan_ShortRows(t *testing.T) {
+	records := [][]string{
+		{"id", "description", "term", "context"},
+		{"1", "D", "T", "C"},
+		{"2"},
+	}
+
+	plan := buildTermDescriptionPlan(records[0])
+
+	got, err := applyTermDescriptionPlan(
+		context.Background(),
+		records,
+		plan,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := [][]string{
+		{"term", "description", "id", "context"},
+		{"T", "D", "1", "C"},
+		{"", "", "2", ""},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf(
+			"got = %#v\nwant = %#v",
+			got,
+			want,
+		)
+	}
+}
+
+func TestApplyTermDescriptionPlan_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	records := [][]string{
+		{"description", "term"},
+		{"D", "T"},
+	}
+
+	plan := buildTermDescriptionPlan(records[0])
+
+	got, err := applyTermDescriptionPlan(
+		ctx,
+		records,
+		plan,
+	)
+
+	if got != nil {
+		t.Fatalf("got = %#v, want nil", got)
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf(
+			"err = %v, want context.Canceled",
+			err,
+		)
+	}
+}
+
+func TestFixTermDescriptionHeader_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fr, err := fixTermDescriptionHeader(
+		ctx,
+		checks.Artifact{
+			Data: []byte("description;term\nD;T\n"),
+		},
+	)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf(
+			"err = %v, want context.Canceled",
+			err,
+		)
+	}
+
+	if fr.DidChange {
+		t.Fatal("DidChange = true, want false")
+	}
+}
+
+func TestFixTermDescriptionHeader_BlankContent_NoFix(t *testing.T) {
+	input := " \n\t\n"
+
+	a := checks.Artifact{
+		Data: []byte(input),
+	}
+
+	fr, err := fixTermDescriptionHeader(
+		context.Background(),
+		a,
+	)
+
+	if !errors.Is(err, checks.ErrNoFix) {
+		t.Fatalf(
+			"err = %v, want ErrNoFix",
+			err,
+		)
+	}
+
+	if fr.DidChange {
+		t.Fatal("DidChange = true, want false")
+	}
+
+	if string(fr.Data) != input {
+		t.Fatalf(
+			"Data = %q, want unchanged %q",
+			fr.Data,
+			input,
+		)
+	}
+}
+
+func TestTermDescriptionFixNote(t *testing.T) {
+	tests := []struct {
+		name string
+		plan termDescriptionPlan
+		want string
+	}{
+		{
+			name: "both exist",
+			plan: termDescriptionPlan{
+				hasTerm:        true,
+				hasDescription: true,
+			},
+			want: "reordered columns to start with term;description",
+		},
+		{
+			name: "term missing",
+			plan: termDescriptionPlan{
+				hasDescription: true,
+			},
+			want: "inserted missing term/description columns at start",
+		},
+		{
+			name: "description missing",
+			plan: termDescriptionPlan{
+				hasTerm: true,
+			},
+			want: "inserted missing term/description columns at start",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := termDescriptionFixNote(tt.plan)
+
+			if got != tt.want {
+				t.Fatalf("got %q, want %q", got, tt.want)
+			}
+		})
 	}
 }

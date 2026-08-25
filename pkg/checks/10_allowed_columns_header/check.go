@@ -104,11 +104,10 @@ func inspectAllowedColumns(
 	}
 
 	if declared.hasAny() {
-		report.missingLangColumns =
-			missingDeclaredLanguageColumns(
-				declared,
-				seen,
-			)
+		report.missingLangColumns = missingDeclaredLanguageColumns(
+			declared,
+			seen,
+		)
 	}
 
 	return report, nil

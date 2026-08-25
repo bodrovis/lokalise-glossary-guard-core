@@ -24,14 +24,6 @@ type termDescriptionFixSource struct {
 	records   [][]string
 }
 
-func (s termDescriptionFixSource) header() []string {
-	if len(s.records) == 0 {
-		return nil
-	}
-
-	return s.records[0]
-}
-
 func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
@@ -46,7 +38,7 @@ func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.Fi
 		return checks.NoFix(a, noFixNote)
 	}
 
-	plan := buildTermDescriptionPlan(source.header())
+	plan := buildTermDescriptionPlan(source.records[0])
 	if plan.alreadyOK {
 		return checks.NoChange(
 			a,

@@ -16,6 +16,7 @@ func WriteSemicolonCSVRecords(
 
 	w := csv.NewWriter(&buf)
 	w.Comma = ';'
+	w.UseCRLF = lineSep == "\r\n"
 
 	for _, record := range records {
 		if err := ctx.Err(); err != nil {
@@ -34,14 +35,6 @@ func WriteSemicolonCSVRecords(
 	}
 
 	out := buf.Bytes()
-
-	if lineSep == "\r\n" {
-		out = bytes.ReplaceAll(
-			out,
-			[]byte("\n"),
-			[]byte("\r\n"),
-		)
-	}
 
 	if !keepFinal {
 		out = trimFinalCSVWriterNewline(out)

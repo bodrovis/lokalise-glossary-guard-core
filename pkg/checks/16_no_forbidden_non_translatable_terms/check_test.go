@@ -2,12 +2,35 @@ package no_forbidden_non_translatable_terms
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
+
+type forbiddenReadResult struct {
+	record []string
+	err    error
+}
+
+type forbiddenScriptedReader struct {
+	results []forbiddenReadResult
+	pos     int
+}
+
+func (r *forbiddenScriptedReader) Read() ([]string, error) {
+	if r.pos >= len(r.results) {
+		return nil, io.EOF
+	}
+
+	result := r.results[r.pos]
+	r.pos++
+
+	return result.record, result.err
+}
 
 func TestValidateNoForbiddenNonTranslatableTerms_AllGood_PASS(t *testing.T) {
 	t.Parallel()
@@ -383,5 +406,194 @@ func TestValidateNoForbiddenNonTranslatableTerms_NoTermColumn_ReportsRowOnly(t *
 	}
 	if !strings.Contains(res.Msg, "(row 2)") {
 		t.Fatalf("expected row number in message, got %q", res.Msg)
+	}
+}
+
+func TestFindForbiddenNonTranslatableRows_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	r := &forbiddenScriptedReader{
+		results: []forbiddenReadResult{
+			{record: []string{"foo", "no", "yes"}},
+		},
+	}
+
+	rows, err := findForbiddenNonTranslatableRows(
+		ctx,
+		r,
+		ctxCheckEveryRows,
+		forbiddenNonTranslatableColumns{
+			term:         0,
+			translatable: 1,
+			forbidden:    2,
+		},
+	)
+
+	if rows != nil {
+		t.Fatalf("rows = %v, want nil", rows)
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestFindForbiddenNonTranslatableRows_ReadError(t *testing.T) {
+	readErr := errors.New("boom")
+
+	r := &forbiddenScriptedReader{
+		results: []forbiddenReadResult{
+			{err: readErr},
+		},
+	}
+
+	rows, err := findForbiddenNonTranslatableRows(
+		context.Background(),
+		r,
+		1,
+		forbiddenNonTranslatableColumns{
+			term:         0,
+			translatable: 1,
+			forbidden:    2,
+		},
+	)
+
+	if rows != nil {
+		t.Fatalf("rows = %v, want nil", rows)
+	}
+
+	if !errors.Is(err, readErr) {
+		t.Fatalf("err = %v, want %v", err, readErr)
+	}
+}
+
+type cancellingForbiddenReader struct {
+	cancel context.CancelFunc
+}
+
+func (r *cancellingForbiddenReader) Read() ([]string, error) {
+	r.cancel()
+	return nil, errors.New("read failed")
+}
+
+func TestFindForbiddenNonTranslatableRows_ContextCancelledDuringRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	r := &cancellingForbiddenReader{
+		cancel: cancel,
+	}
+
+	rows, err := findForbiddenNonTranslatableRows(
+		ctx,
+		r,
+		1,
+		forbiddenNonTranslatableColumns{
+			term:         0,
+			translatable: 1,
+			forbidden:    2,
+		},
+	)
+
+	if rows != nil {
+		t.Fatalf("rows = %v, want nil", rows)
+	}
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+func TestRecordValue(t *testing.T) {
+	tests := []struct {
+		name   string
+		record []string
+		pos    int
+		want   string
+	}{
+		{
+			name:   "normal value",
+			record: []string{"foo", " yes "},
+			pos:    1,
+			want:   "yes",
+		},
+		{
+			name:   "negative position",
+			record: []string{"foo"},
+			pos:    -1,
+			want:   "",
+		},
+		{
+			name:   "position beyond row width",
+			record: []string{"foo"},
+			pos:    2,
+			want:   "",
+		},
+		{
+			name:   "empty value",
+			record: []string{""},
+			pos:    0,
+			want:   "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := recordValue(tt.record, tt.pos)
+
+			if got != tt.want {
+				t.Fatalf(
+					"recordValue(%v, %d) = %q, want %q",
+					tt.record,
+					tt.pos,
+					got,
+					tt.want,
+				)
+			}
+		})
+	}
+}
+
+func TestIsForbiddenNonTranslatableRecord_ShortRow(t *testing.T) {
+	cols := forbiddenNonTranslatableColumns{
+		translatable: 1,
+		forbidden:    2,
+	}
+
+	if isForbiddenNonTranslatableRecord(
+		[]string{"foo", "no"},
+		cols,
+	) {
+		t.Fatal("short row must not be considered forbidden + non-translatable")
+	}
+}
+
+func TestValidateNoForbiddenNonTranslatableTerms_ContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	res := validateNoForbiddenNonTranslatableTerms(
+		ctx,
+		checks.Artifact{
+			Data: []byte(
+				"term;translatable;forbidden\nfoo;no;yes\n",
+			),
+		},
+	)
+
+	if res.OK {
+		t.Fatal("OK = true, want false")
+	}
+
+	if !errors.Is(res.Err, context.Canceled) {
+		t.Fatalf("Err = %v, want context.Canceled", res.Err)
+	}
+
+	if res.Msg != "validation cancelled" {
+		t.Fatalf(
+			"Msg = %q, want %q",
+			res.Msg,
+			"validation cancelled",
+		)
 	}
 }

@@ -129,3 +129,103 @@ func TestIsBlankUnicode(t *testing.T) {
 		})
 	}
 }
+
+func TestSplitUTF8BOM(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		wantData []byte
+		wantBOM  []byte
+	}{
+		{
+			name:     "nil input",
+			input:    nil,
+			wantData: nil,
+			wantBOM:  nil,
+		},
+		{
+			name:     "empty input",
+			input:    []byte{},
+			wantData: []byte{},
+			wantBOM:  nil,
+		},
+		{
+			name:     "no BOM",
+			input:    []byte("term;description"),
+			wantData: []byte("term;description"),
+			wantBOM:  nil,
+		},
+		{
+			name:     "UTF-8 BOM with content",
+			input:    []byte{0xEF, 0xBB, 0xBF, 't', 'e', 'r', 'm'},
+			wantData: []byte("term"),
+			wantBOM:  []byte{0xEF, 0xBB, 0xBF},
+		},
+		{
+			name:     "BOM only",
+			input:    []byte{0xEF, 0xBB, 0xBF},
+			wantData: []byte{},
+			wantBOM:  []byte{0xEF, 0xBB, 0xBF},
+		},
+		{
+			name:     "partial BOM is not stripped",
+			input:    []byte{0xEF, 0xBB},
+			wantData: []byte{0xEF, 0xBB},
+			wantBOM:  nil,
+		},
+		{
+			name: "similar prefix is not stripped",
+			input: []byte{
+				0xEF, 0xBB, 0xBE, 'x',
+			},
+			wantData: []byte{
+				0xEF, 0xBB, 0xBE, 'x',
+			},
+			wantBOM: nil,
+		},
+		{
+			name: "double BOM strips only first",
+			input: []byte{
+				0xEF, 0xBB, 0xBF,
+				0xEF, 0xBB, 0xBF,
+				'x',
+			},
+			wantData: []byte{
+				0xEF, 0xBB, 0xBF,
+				'x',
+			},
+			wantBOM: []byte{
+				0xEF, 0xBB, 0xBF,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotData, gotBOM := checks.SplitUTF8BOM(tt.input)
+
+			if !bytes.Equal(gotData, tt.wantData) {
+				t.Errorf(
+					"data = %v, want %v",
+					gotData,
+					tt.wantData,
+				)
+			}
+
+			if !bytes.Equal(gotBOM, tt.wantBOM) {
+				t.Errorf(
+					"BOM = %v, want %v",
+					gotBOM,
+					tt.wantBOM,
+				)
+			}
+
+			if tt.wantBOM == nil && gotBOM != nil {
+				t.Errorf(
+					"BOM = %v, want nil",
+					gotBOM,
+				)
+			}
+		})
+	}
+}
