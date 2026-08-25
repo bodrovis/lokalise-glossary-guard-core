@@ -39,21 +39,29 @@ func runEnsureLowercaseHeader(ctx context.Context, a checks.Artifact, opts check
 	})
 }
 
-func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	header, res, ok := readHeader(ctx, a)
+func validateLowercaseHeader(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
+	header, res, ok := checks.ReadSemicolonHeader(
+		ctx,
+		a,
+		"cannot check header: no usable content",
+	)
 	if !ok {
 		return res
 	}
 
 	bad, err := findNonLowercaseServiceHeaderColumns(ctx, header)
 	if err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	if len(bad) > 0 {
 		return checks.ValidationResult{
-			OK:  false,
-			Msg: "some service columns in header are not lowercase at positions: " + strings.Join(bad, ", "),
+			OK: false,
+			Msg: "some service columns in header are not lowercase at positions: " +
+				strings.Join(bad, ", "),
 		}
 	}
 
@@ -61,32 +69,6 @@ func validateLowercaseHeader(ctx context.Context, a checks.Artifact) checks.Vali
 		OK:  true,
 		Msg: "header service columns are already lowercase",
 	}
-}
-
-func readHeader(ctx context.Context, a checks.Artifact) ([]string, checks.ValidationResult, bool) {
-	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
-		ctx,
-		a,
-		"cannot check header: no usable content",
-	)
-	if !ok {
-		return nil, res, false
-	}
-
-	header, err := r.Read()
-	if err != nil || len(header) == 0 {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, cancelledValidation(ctxErr), false
-		}
-
-		return nil, checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot parse header with semicolon delimiter",
-			Err: err,
-		}, false
-	}
-
-	return header, checks.ValidationResult{}, true
 }
 
 func findNonLowercaseServiceHeaderColumns(ctx context.Context, header []string) ([]string, error) {
@@ -117,12 +99,4 @@ func isNonLowercaseKnownHeader(col string) bool {
 	}
 
 	return trimmed != lower
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

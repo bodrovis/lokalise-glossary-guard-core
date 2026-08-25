@@ -42,7 +42,7 @@ func runUTF8Check(ctx context.Context, a checks.Artifact, opts checks.RunOptions
 
 func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	if res, ok := validateNonEmptyData(a.Data); !ok {
@@ -51,7 +51,7 @@ func validateUTF8(ctx context.Context, a checks.Artifact) checks.ValidationResul
 
 	pos, err := firstInvalidUTF8Byte(ctx, a.Data)
 	if err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 	if pos >= 0 {
 		return checks.ValidationResult{
@@ -95,12 +95,4 @@ func firstInvalidUTF8Byte(ctx context.Context, data []byte) (int, error) {
 	}
 
 	return -1, nil
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

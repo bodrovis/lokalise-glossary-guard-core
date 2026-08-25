@@ -3,18 +3,9 @@ package term_description_header
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
-	"errors"
-	"io"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
-
-type physicalHeaderParts struct {
-	before []byte
-	line   []byte
-	rest   []byte
-}
 
 type termDescriptionPlan struct {
 	hasTerm        bool
@@ -29,7 +20,7 @@ type termDescriptionFixSource struct {
 	bom       []byte
 	lineSep   string
 	keepFinal bool
-	parts     physicalHeaderParts
+	parts     checks.PhysicalLineParts
 	records   [][]string
 }
 
@@ -41,32 +32,26 @@ func (s termDescriptionFixSource) header() []string {
 	return s.records[0]
 }
 
-type earlyTermDescriptionFix struct {
-	result checks.FixResult
-	err    error
-}
-
 func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
 
-	source, early, err := prepareTermDescriptionFix(ctx, a)
+	source, noFixNote, err := prepareTermDescriptionFix(ctx, a)
 	if err != nil {
 		return checks.FixResult{}, err
 	}
-	if early != nil {
-		return early.result, early.err
+
+	if noFixNote != "" {
+		return checks.NoFix(a, noFixNote)
 	}
 
 	plan := buildTermDescriptionPlan(source.header())
 	if plan.alreadyOK {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "header already starts with term;description",
-		}, nil
+		return checks.NoChange(
+			a,
+			"header already starts with term;description",
+		), nil
 	}
 
 	outRecs, err := applyTermDescriptionPlan(ctx, source.records, plan)
@@ -76,16 +61,14 @@ func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.Fi
 
 	body, err := serializeTermDescriptionRecords(ctx, outRecs, source)
 	if err != nil {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "failed to serialize CSV: " + err.Error(),
-		}, err
+		return checks.NoChange(
+			a,
+			"failed to serialize CSV: "+err.Error(),
+		), err
 	}
 
 	return checks.FixResult{
-		Data:      stitchFixedCSV(source.bom, source.parts.before, body),
+		Data:      stitchFixedCSV(source.bom, source.parts.Before, body),
 		Path:      "",
 		DidChange: true,
 		Note:      termDescriptionFixNote(plan),
@@ -95,26 +78,35 @@ func fixTermDescriptionHeader(ctx context.Context, a checks.Artifact) (checks.Fi
 func prepareTermDescriptionFix(
 	ctx context.Context,
 	a checks.Artifact,
-) (termDescriptionFixSource, *earlyTermDescriptionFix, error) {
+) (termDescriptionFixSource, string, error) {
 	in, bom := checks.SplitUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(in) {
-		return termDescriptionFixSource{}, noFixEarly(a, "no usable content to fix"), nil
+		return termDescriptionFixSource{},
+			"no usable content to fix",
+			nil
 	}
 
-	parts, ok, err := findFirstNonBlankPhysicalLine(ctx, in)
+	parts, ok, err := checks.FindFirstNonBlankPhysicalLine(ctx, in)
 	if err != nil {
-		return termDescriptionFixSource{}, nil, err
+		return termDescriptionFixSource{}, "", err
 	}
+
 	if !ok {
-		return termDescriptionFixSource{}, noFixEarly(a, "no header line found"), nil
+		return termDescriptionFixSource{},
+			"no header line found",
+			nil
 	}
 
 	records, ok, err := readTermDescriptionRecords(ctx, parts)
 	if err != nil {
-		return termDescriptionFixSource{}, nil, err
+		return termDescriptionFixSource{}, "", err
 	}
+
 	if !ok {
-		return termDescriptionFixSource{}, noFixEarly(a, "cannot parse CSV with semicolon delimiter"), nil
+		return termDescriptionFixSource{},
+			"cannot parse CSV with semicolon delimiter",
+			nil
 	}
 
 	return termDescriptionFixSource{
@@ -123,21 +115,12 @@ func prepareTermDescriptionFix(
 		keepFinal: bytes.HasSuffix(in, []byte("\n")),
 		parts:     parts,
 		records:   records,
-	}, nil, nil
-}
-
-func noFixEarly(a checks.Artifact, note string) *earlyTermDescriptionFix {
-	result, err := checks.NoFix(a, note)
-
-	return &earlyTermDescriptionFix{
-		result: result,
-		err:    err,
-	}
+	}, "", nil
 }
 
 func readTermDescriptionRecords(
 	ctx context.Context,
-	parts physicalHeaderParts,
+	parts checks.PhysicalLineParts,
 ) ([][]string, bool, error) {
 	data := appendHeaderAndRest(parts)
 
@@ -153,10 +136,12 @@ func readTermDescriptionRecords(
 	return records, true, nil
 }
 
-func appendHeaderAndRest(parts physicalHeaderParts) []byte {
-	data := make([]byte, 0, len(parts.line)+len(parts.rest))
-	data = append(data, parts.line...)
-	data = append(data, parts.rest...)
+func appendHeaderAndRest(
+	parts checks.PhysicalLineParts,
+) []byte {
+	data := make([]byte, 0, len(parts.Line)+len(parts.Rest))
+	data = append(data, parts.Line...)
+	data = append(data, parts.Rest...)
 
 	return data
 }
@@ -166,20 +151,12 @@ func serializeTermDescriptionRecords(
 	records [][]string,
 	source termDescriptionFixSource,
 ) ([]byte, error) {
-	body, err := writeSemicolonRecords(ctx, records)
-	if err != nil {
-		return nil, err
-	}
-
-	if source.lineSep == "\r\n" {
-		body = bytes.ReplaceAll(body, []byte("\n"), []byte("\r\n"))
-	}
-
-	if !source.keepFinal {
-		body = trimFinalCSVWriterNewline(body)
-	}
-
-	return body, nil
+	return checks.WriteSemicolonCSVRecords(
+		ctx,
+		records,
+		source.lineSep,
+		source.keepFinal,
+	)
 }
 
 func termDescriptionFixNote(plan termDescriptionPlan) string {
@@ -190,48 +167,6 @@ func termDescriptionFixNote(plan termDescriptionPlan) string {
 	return "reordered columns to start with term;description"
 }
 
-func findFirstNonBlankPhysicalLine(ctx context.Context, data []byte) (physicalHeaderParts, bool, error) {
-	pos := 0
-
-	for pos <= len(data) {
-		if err := ctx.Err(); err != nil {
-			return physicalHeaderParts{}, false, err
-		}
-
-		line, rest, found := bytes.Cut(data[pos:], []byte("\n"))
-		lineForCheck := trimTrailingCR(line)
-
-		if !checks.IsBlankUnicode(lineForCheck) {
-			headerEnd := len(data) - len(rest)
-			if !found {
-				headerEnd = len(data)
-			}
-
-			return physicalHeaderParts{
-				before: data[:pos],
-				line:   data[pos:headerEnd],
-				rest:   data[headerEnd:],
-			}, true, nil
-		}
-
-		if !found {
-			break
-		}
-
-		pos += len(line) + 1
-	}
-
-	return physicalHeaderParts{}, false, nil
-}
-
-func trimTrailingCR(line []byte) []byte {
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		return line[:len(line)-1]
-	}
-
-	return line
-}
-
 func buildTermDescriptionPlan(header []string) termDescriptionPlan {
 	plan := termDescriptionPlan{
 		termIndex: -1,
@@ -239,7 +174,7 @@ func buildTermDescriptionPlan(header []string) termDescriptionPlan {
 	}
 
 	for i, col := range header {
-		switch normalizeHeaderCell(col) {
+		switch checks.NormalizeStr(col) {
 		case "term":
 			if plan.termIndex < 0 {
 				plan.termIndex = i
@@ -262,8 +197,8 @@ func buildTermDescriptionPlan(header []string) termDescriptionPlan {
 	}
 
 	plan.alreadyOK = len(header) >= 2 &&
-		normalizeHeaderCell(header[0]) == "term" &&
-		normalizeHeaderCell(header[1]) == "description"
+		checks.NormalizeStr(header[0]) == "term" &&
+		checks.NormalizeStr(header[1]) == "description"
 
 	return plan
 }
@@ -304,62 +239,13 @@ func applyTermDescriptionPlan(
 	return out, nil
 }
 
-func readSemicolonRecords(ctx context.Context, data []byte) ([][]string, error) {
+func readSemicolonRecords(
+	ctx context.Context,
+	data []byte,
+) ([][]string, error) {
 	r := checks.NewSemicolonCSVReader(data)
 
-	var records [][]string
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return records, nil
-			}
-
-			return nil, err
-		}
-
-		records = append(records, rec)
-	}
-}
-
-func writeSemicolonRecords(ctx context.Context, records [][]string) ([]byte, error) {
-	var buf bytes.Buffer
-
-	w := csv.NewWriter(&buf)
-	w.Comma = ';'
-
-	for _, rec := range records {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := w.Write(rec); err != nil {
-			return nil, err
-		}
-	}
-
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return nil, err
-	}
-
-	return buf.Bytes(), nil
-}
-
-func trimFinalCSVWriterNewline(data []byte) []byte {
-	if bytes.HasSuffix(data, []byte("\r\n")) {
-		return data[:len(data)-2]
-	}
-
-	if bytes.HasSuffix(data, []byte("\n")) {
-		return data[:len(data)-1]
-	}
-
-	return data
+	return checks.ReadAllCSVRecords(ctx, r)
 }
 
 func stitchFixedCSV(bom, before, body []byte) []byte {

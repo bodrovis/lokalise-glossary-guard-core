@@ -36,12 +36,16 @@ func runEnsureSemicolonSeparators(ctx context.Context, a checks.Artifact, opts c
 	})
 }
 
-func validateSemicolonSeparated(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+func validateSemicolonSeparated(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	dataBytes := checks.StripUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(dataBytes) {
 		return checks.ValidationResult{
 			OK:  false,
@@ -51,11 +55,13 @@ func validateSemicolonSeparated(ctx context.Context, a checks.Artifact) checks.V
 
 	report, err := detectSeparators(ctx, dataBytes)
 	if err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	if report.semicolonOK {
-		return checks.ValidationResult{OK: true}
+		return checks.ValidationResult{
+			OK: true,
+		}
 	}
 
 	return checks.ValidationResult{

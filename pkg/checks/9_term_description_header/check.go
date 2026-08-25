@@ -2,7 +2,6 @@ package term_description_header
 
 import (
 	"context"
-	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
@@ -42,8 +41,18 @@ func runEnsureTermDescriptionHeader(ctx context.Context, a checks.Artifact, opts
 	})
 }
 
-func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	header, res, ok := readFirstNonBlankHeader(ctx, a)
+func validateTermDescriptionHeader(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
+	cleanArtifact := a
+	cleanArtifact.Data = checks.StripUTF8BOM(a.Data)
+
+	header, res, ok := checks.ReadFirstNonBlankSemicolonHeader(
+		ctx,
+		cleanArtifact,
+		"cannot check header: no usable content",
+	)
 	if !ok {
 		return res
 	}
@@ -69,52 +78,9 @@ func validateTermDescriptionHeader(ctx context.Context, a checks.Artifact) check
 	}
 }
 
-func readFirstNonBlankHeader(
-	ctx context.Context,
-	a checks.Artifact,
-) ([]string, checks.ValidationResult, bool) {
-	data := checks.StripUTF8BOM(a.Data)
-
-	r, res, ok := checks.NewSemicolonCSVReaderWithCtx(
-		ctx,
-		checks.Artifact{
-			Data:  data,
-			Path:  a.Path,
-			Langs: a.Langs,
-		},
-		"cannot check header: no usable content",
-	)
-	if !ok {
-		return nil, res, false
-	}
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, cancelledValidation(ctxErr), false
-			}
-
-			return nil, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		if !isBlankCSVRecord(rec) {
-			return rec, checks.ValidationResult{}, true
-		}
-	}
-}
-
 func inspectTermDescriptionHeader(header []string) termDescriptionReport {
-	first := normalizeHeaderCell(header[0])
-	second := normalizeHeaderCell(header[1])
+	first := checks.NormalizeStr(header[0])
+	second := checks.NormalizeStr(header[1])
 
 	if first == "term" && second == "description" {
 		return termDescriptionReport{ok: true}
@@ -147,7 +113,7 @@ func hasRequiredHeaderColumns(header []string) (bool, bool) {
 	hasDescription := false
 
 	for _, col := range header {
-		switch normalizeHeaderCell(col) {
+		switch checks.NormalizeStr(col) {
 		case "term":
 			hasTerm = true
 		case "description":
@@ -156,26 +122,4 @@ func hasRequiredHeaderColumns(header []string) (bool, bool) {
 	}
 
 	return hasTerm, hasDescription
-}
-
-func normalizeHeaderCell(col string) string {
-	return strings.ToLower(strings.TrimSpace(col))
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, col := range record {
-		if !checks.IsBlankUnicode([]byte(col)) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

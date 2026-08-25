@@ -4,48 +4,77 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-func fixToSemicolonsIfConsistent(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
+func fixToSemicolonsIfConsistent(
+	ctx context.Context,
+	a checks.Artifact,
+) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
 
 	in, bom := checks.SplitUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(in) {
-		return noSeparatorFix(a, "no usable content to convert"), checks.ErrNoFix
+		return checks.NoFix(
+			a,
+			"no usable content to convert",
+		)
 	}
 
 	lineSep := checks.DetectLineEnding(in)
-	keepFinalNewline := hasFinalNewline(in)
+	keepFinalNewline := bytes.HasSuffix(in, []byte("\n"))
 
 	alreadyOK, err := attemptRectParse(ctx, in, ';')
 	if err != nil {
 		return checks.FixResult{}, err
 	}
+
 	if alreadyOK {
-		return noSeparatorFix(a, "already semicolon-separated"), nil
+		return checks.NoChange(
+			a,
+			"already semicolon-separated",
+		), nil
 	}
 
 	alt, ok, err := detectConvertibleDelimiter(ctx, in)
 	if err != nil {
 		return checks.FixResult{}, err
 	}
+
 	if !ok {
-		return noSeparatorFix(a, "cannot confidently detect delimiter; skipped auto-convert"), checks.ErrNoFix
+		return checks.NoFix(
+			a,
+			"cannot confidently detect delimiter; skipped auto-convert",
+		)
 	}
 
-	converted := writeCSVWithSep(alt.records, ';', lineSep, keepFinalNewline)
+	converted, err := checks.WriteSemicolonCSVRecords(
+		ctx,
+		alt.records,
+		lineSep,
+		keepFinalNewline,
+	)
+	if err != nil {
+		return checks.NoChange(
+			a,
+			"failed to serialize CSV: "+err.Error(),
+		), err
+	}
+
 	converted = prependBOM(bom, converted)
 
 	return checks.FixResult{
 		Data:      converted,
 		Path:      "",
 		DidChange: true,
-		Note:      fmt.Sprintf("converted from %s to semicolons", alt.name),
+		Note: fmt.Sprintf(
+			"converted from %s to semicolons",
+			alt.name,
+		),
 	}, nil
 }
 
@@ -65,69 +94,58 @@ type convertibleDelimiter struct {
 	records [][]string
 }
 
-func detectConvertibleDelimiter(ctx context.Context, data []byte) (convertibleDelimiter, bool, error) {
-	commaRecs, commaOK, err := parseRectRecords(ctx, data, ',')
+type alternativeDelimiters struct {
+	commaRecords [][]string
+	commaOK      bool
+	tabRecords   [][]string
+	tabOK        bool
+}
+
+func detectAlternativeDelimiters(
+	ctx context.Context,
+	data []byte,
+) (alternativeDelimiters, error) {
+	commaRecords, commaOK, err := parseRectRecords(ctx, data, ',')
 	if err != nil {
-		return convertibleDelimiter{}, false, err
+		return alternativeDelimiters{}, err
 	}
 
-	tabRecs, tabOK, err := parseRectRecords(ctx, data, '\t')
+	tabRecords, tabOK, err := parseRectRecords(ctx, data, '\t')
+	if err != nil {
+		return alternativeDelimiters{}, err
+	}
+
+	return alternativeDelimiters{
+		commaRecords: commaRecords,
+		commaOK:      commaOK,
+		tabRecords:   tabRecords,
+		tabOK:        tabOK,
+	}, nil
+}
+
+func detectConvertibleDelimiter(
+	ctx context.Context,
+	data []byte,
+) (convertibleDelimiter, bool, error) {
+	alts, err := detectAlternativeDelimiters(ctx, data)
 	if err != nil {
 		return convertibleDelimiter{}, false, err
 	}
 
 	switch {
-	case commaOK && !tabOK:
-		return convertibleDelimiter{name: "commas", records: commaRecs}, true, nil
-	case tabOK && !commaOK:
-		return convertibleDelimiter{name: "tabs", records: tabRecs}, true, nil
+	case alts.commaOK && !alts.tabOK:
+		return convertibleDelimiter{
+			name:    "commas",
+			records: alts.commaRecords,
+		}, true, nil
+
+	case alts.tabOK && !alts.commaOK:
+		return convertibleDelimiter{
+			name:    "tabs",
+			records: alts.tabRecords,
+		}, true, nil
+
 	default:
-		// none detected OR ambiguous comma+tab detection
 		return convertibleDelimiter{}, false, nil
 	}
-}
-
-func noSeparatorFix(a checks.Artifact, note string) checks.FixResult {
-	return checks.FixResult{
-		Data:      a.Data,
-		Path:      "",
-		DidChange: false,
-		Note:      note,
-	}
-}
-
-func writeCSVWithSep(recs [][]string, delim rune, lineSep string, keepFinal bool) []byte {
-	var b strings.Builder
-
-	for i, row := range recs {
-		for j, col := range row {
-			if j > 0 {
-				b.WriteRune(delim)
-			}
-			b.WriteString(escapeCSVField(col, delim))
-		}
-
-		if i < len(recs)-1 || keepFinal {
-			b.WriteString(lineSep)
-		}
-	}
-
-	return []byte(b.String())
-}
-
-func escapeCSVField(field string, delim rune) string {
-	if !needsCSVQuotes(field, delim) {
-		return field
-	}
-
-	return `"` + strings.ReplaceAll(field, `"`, `""`) + `"`
-}
-
-func needsCSVQuotes(field string, delim rune) bool {
-	return strings.ContainsRune(field, delim) ||
-		strings.ContainsAny(field, "\"\n\r")
-}
-
-func hasFinalNewline(b []byte) bool {
-	return bytes.HasSuffix(b, []byte("\n"))
 }

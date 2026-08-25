@@ -3,9 +3,6 @@ package duplicate_term_values
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
-	"errors"
-	"io"
 	"strconv"
 	"strings"
 
@@ -25,15 +22,21 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 	lineSep := checks.DetectLineEnding(in)
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
-	parts, ok, err := findDuplicateTermHeaderLine(ctx, in)
+	parts, ok, err := checks.FindFirstNonBlankPhysicalLine(ctx, in)
 	if err != nil {
 		return checks.FixResult{}, err
 	}
+
 	if !ok {
 		return checks.NoFix(a, "no header with 'term' column found")
 	}
 
-	records, err := readDuplicateTermRecords(ctx, appendDuplicateTermHeaderAndRest(parts))
+	headerLineNo := 1 + bytes.Count(parts.Before, []byte("\n"))
+
+	records, err := readDuplicateTermRecords(
+		ctx,
+		appendDuplicateTermHeaderAndRest(parts),
+	)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return checks.FixResult{}, ctxErr
@@ -45,32 +48,33 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 		return checks.NoFix(a, "no header with 'term' column found")
 	}
 
-	termCol := findTermColumn(records[0])
+	termCol := checks.FindHeaderColumn(records[0], "term")
 	if termCol < 0 {
 		return checks.NoFix(a, "no 'term' column found")
 	}
 
-	plan := buildDuplicateTermFixPlan(records, termCol, parts.headerLineNo)
+	plan := buildDuplicateTermFixPlan(records, termCol, headerLineNo)
 	if !plan.hasDuplicates() {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "no duplicate term rows to remove",
-		}, nil
+		return checks.NoChange(
+			a,
+			"no duplicate term rows to remove",
+		), nil
 	}
 
-	outTail, err := writeDuplicateTermRecords(ctx, plan.records, lineSep, keepFinal)
+	outTail, err := checks.WriteSemicolonCSVRecords(
+		ctx,
+		plan.records,
+		lineSep,
+		keepFinal,
+	)
 	if err != nil {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "failed to serialize CSV: " + err.Error(),
-		}, err
+		return checks.NoChange(
+			a,
+			"failed to serialize CSV: "+err.Error(),
+		), err
 	}
 
-	out := stitchDuplicateTermFix(bom, parts.before, outTail)
+	out := stitchDuplicateTermFix(bom, parts.Before, outTail)
 
 	return checks.FixResult{
 		Data:      out,
@@ -80,146 +84,29 @@ func fixDuplicateTermValues(ctx context.Context, a checks.Artifact) (checks.FixR
 	}, nil
 }
 
-type duplicateTermHeaderParts struct {
-	before       []byte
-	line         []byte
-	rest         []byte
-	headerLineNo int
-}
-
-func findDuplicateTermHeaderLine(
-	ctx context.Context,
-	data []byte,
-) (duplicateTermHeaderParts, bool, error) {
-	pos := 0
-
-	for pos <= len(data) {
-		if err := ctx.Err(); err != nil {
-			return duplicateTermHeaderParts{}, false, err
-		}
-
-		line, rest, found := bytes.Cut(data[pos:], []byte("\n"))
-		lineForCheck := trimTrailingCR(line)
-
-		if !checks.IsBlankUnicode(lineForCheck) {
-			headerEnd := len(data) - len(rest)
-			if !found {
-				headerEnd = len(data)
-			}
-
-			return duplicateTermHeaderParts{
-				before:       data[:pos],
-				line:         data[pos:headerEnd],
-				rest:         data[headerEnd:],
-				headerLineNo: 1 + bytes.Count(data[:pos], []byte("\n")),
-			}, true, nil
-		}
-
-		if !found {
-			break
-		}
-
-		pos += len(line) + 1
-	}
-
-	return duplicateTermHeaderParts{}, false, nil
-}
-
-func appendDuplicateTermHeaderAndRest(parts duplicateTermHeaderParts) []byte {
-	out := make([]byte, 0, len(parts.line)+len(parts.rest))
-	out = append(out, parts.line...)
-	out = append(out, parts.rest...)
+func appendDuplicateTermHeaderAndRest(
+	parts checks.PhysicalLineParts,
+) []byte {
+	out := make([]byte, 0, len(parts.Line)+len(parts.Rest))
+	out = append(out, parts.Line...)
+	out = append(out, parts.Rest...)
 
 	return out
 }
 
-func trimTrailingCR(line []byte) []byte {
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		return line[:len(line)-1]
-	}
-
-	return line
-}
-
-func readDuplicateTermRecords(ctx context.Context, data []byte) ([][]string, error) {
+func readDuplicateTermRecords(
+	ctx context.Context,
+	data []byte,
+) ([][]string, error) {
 	r := checks.NewSemicolonCSVReader(data)
 
-	var records [][]string
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return records, nil
-			}
-
-			return nil, err
-		}
-
-		records = append(records, rec)
-	}
-}
-
-func writeDuplicateTermRecords(
-	ctx context.Context,
-	records [][]string,
-	lineSep string,
-	keepFinal bool,
-) ([]byte, error) {
-	var buf bytes.Buffer
-
-	w := csv.NewWriter(&buf)
-	w.Comma = ';'
-
-	for _, rec := range records {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := w.Write(rec); err != nil {
-			return nil, err
-		}
-	}
-
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return nil, err
-	}
-
-	out := buf.Bytes()
-
-	if lineSep == "\r\n" {
-		out = bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
-	}
-
-	if !keepFinal {
-		out = trimFinalCSVWriterNewline(out)
-	}
-
-	return out, nil
-}
-
-func trimFinalCSVWriterNewline(data []byte) []byte {
-	if bytes.HasSuffix(data, []byte("\r\n")) {
-		return data[:len(data)-2]
-	}
-
-	if bytes.HasSuffix(data, []byte("\n")) {
-		return data[:len(data)-1]
-	}
-
-	return data
+	return checks.ReadAllCSVRecords(ctx, r)
 }
 
 type duplicateTermFixPlan struct {
-	records []stringSlice
+	records [][]string
 	removed []removedDuplicateTerm
 }
-
-type stringSlice = []string
 
 type removedDuplicateTerm struct {
 	term string
@@ -245,7 +132,7 @@ func buildDuplicateTermFixPlan(
 	for i := 1; i < len(records); i++ {
 		rec := records[i]
 
-		term, ok := duplicateTermValue(rec, termCol)
+		term, ok := termValue(rec, termCol)
 		if !ok {
 			out = append(out, rec)
 			continue
@@ -278,19 +165,6 @@ func buildDuplicateTermFixPlan(
 	}
 }
 
-func duplicateTermValue(record []string, termCol int) (string, bool) {
-	if termCol >= len(record) {
-		return "", false
-	}
-
-	term := strings.TrimSpace(record[termCol])
-	if term == "" {
-		return "", false
-	}
-
-	return term, true
-}
-
 func duplicateTermFixNote(removed []removedDuplicateTerm) string {
 	var b strings.Builder
 	b.WriteString("removed duplicate term rows for: ")
@@ -302,24 +176,8 @@ func duplicateTermFixNote(removed []removedDuplicateTerm) string {
 
 		b.WriteString(strconv.Quote(info.term))
 		b.WriteString(" (rows ")
-		b.WriteString(joinInts(info.rows, ", "))
+		b.WriteString(joinIntSlice(info.rows, ", "))
 		b.WriteString(")")
-	}
-
-	return b.String()
-}
-
-func joinInts(nums []int, sep string) string {
-	if len(nums) == 0 {
-		return ""
-	}
-
-	var b strings.Builder
-	b.WriteString(strconv.Itoa(nums[0]))
-
-	for _, n := range nums[1:] {
-		b.WriteString(sep)
-		b.WriteString(strconv.Itoa(n))
 	}
 
 	return b.String()

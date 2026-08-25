@@ -2,7 +2,6 @@ package empty_lines
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -47,13 +46,13 @@ func runNoEmptyLines(ctx context.Context, a checks.Artifact, opts checks.RunOpti
 
 func validateNoEmptyLines(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	report, err := scanEmptyLines(ctx, a.Data)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return cancelledValidation(err)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return checks.CancelledValidation(ctxErr)
 		}
 
 		return checks.ValidationResult{
@@ -95,14 +94,6 @@ func checkContextEveryLine(ctx context.Context, lineNo int) error {
 	}
 
 	return ctx.Err()
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }
 
 func formatEmptyMsg(total int, first []int) string {

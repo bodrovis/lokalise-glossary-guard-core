@@ -17,10 +17,10 @@ const (
 	maxReportedFlagErrors = 10
 )
 
-var watchedCols = []string{
-	"casesensitive",
-	"translatable",
-	"forbidden",
+var watchedCols = map[string]struct{}{
+	"casesensitive": {},
+	"translatable":  {},
+	"forbidden":     {},
 }
 
 func init() {
@@ -53,7 +53,7 @@ func runNoInvalidFlags(ctx context.Context, a checks.Artifact, opts checks.RunOp
 
 func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
@@ -66,7 +66,11 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 
 	r := checks.NewSemicolonCSVReader(data)
 
-	header, rowNum, res, ok := readFlagHeader(ctx, r)
+	header, rowNum, res, ok := checks.ReadFirstNonBlankHeaderWithRow(
+		ctx,
+		r,
+		"no header line found (nothing to validate for flags)",
+	)
 	if !ok {
 		return res
 	}
@@ -82,7 +86,7 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 	invalids, err := findInvalidFlagValues(ctx, r, rowNum, flagColumns)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return cancelledValidation(ctxErr)
+			return checks.CancelledValidation(ctxErr)
 		}
 
 		return checks.ValidationResult{
@@ -105,71 +109,18 @@ func validateNoInvalidFlags(ctx context.Context, a checks.Artifact) checks.Valid
 	}
 }
 
-type csvReader interface {
-	Read() ([]string, error)
-}
-
-func readFlagHeader(
-	ctx context.Context,
-	r csvReader,
-) ([]string, int, checks.ValidationResult, bool) {
-	rowNum := 0
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, rowNum, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, rowNum, checks.ValidationResult{
-					OK:  true,
-					Msg: "no header line found (nothing to validate for flags)",
-				}, false
-			}
-
-			return nil, rowNum, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		rowNum++
-
-		if !isBlankCSVRecord(rec) {
-			return rec, rowNum, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, field := range record {
-		if !checks.IsBlankUnicode([]byte(field)) {
-			return false
-		}
-	}
-
-	return true
-}
-
 type flagColumn struct {
 	name string
 	pos  int
 }
 
 func findFlagColumns(header []string) []flagColumn {
-	watched := make(map[string]struct{}, len(watchedCols))
-	for _, col := range watchedCols {
-		watched[col] = struct{}{}
-	}
-
 	cols := make([]flagColumn, 0, len(watchedCols))
 
 	for i, h := range header {
-		name := normalizeHeaderCell(h)
-		if _, ok := watched[name]; !ok {
+		name := checks.NormalizeStr(h)
+
+		if _, ok := watchedCols[name]; !ok {
 			continue
 		}
 
@@ -182,10 +133,6 @@ func findFlagColumns(header []string) []flagColumn {
 	return cols
 }
 
-func normalizeHeaderCell(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
-}
-
 type invalidFlagValue struct {
 	colName string
 	value   string
@@ -194,7 +141,7 @@ type invalidFlagValue struct {
 
 func findInvalidFlagValues(
 	ctx context.Context,
-	r csvReader,
+	r checks.CSVReader,
 	rowNum int,
 	flagColumns []flagColumn,
 ) ([]invalidFlagValue, error) {
@@ -222,7 +169,7 @@ func findInvalidFlagValues(
 
 		rowNum++
 
-		if isBlankCSVRecord(rec) {
+		if checks.IsBlankCSVRecord(rec) {
 			continue
 		}
 
@@ -289,12 +236,4 @@ func invalidFlagsMessage(invalids []invalidFlagValue) string {
 	b.WriteString(" invalid values)")
 
 	return b.String()
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

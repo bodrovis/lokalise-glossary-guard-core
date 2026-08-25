@@ -2,6 +2,8 @@ package duplicate_header_cells
 
 import (
 	"context"
+	"errors"
+	"io"
 	"strconv"
 	"strings"
 
@@ -38,12 +40,16 @@ func runWarnDuplicateHeaderCells(ctx context.Context, a checks.Artifact, opts ch
 	})
 }
 
-func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+func validateDuplicateHeaderCells(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(data) {
 		return checks.ValidationResult{
 			OK:  true,
@@ -58,7 +64,7 @@ func validateDuplicateHeaderCells(ctx context.Context, a checks.Artifact) checks
 
 	dups, err := findDuplicateHeaderCells(ctx, header)
 	if err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	if len(dups) == 0 {
@@ -80,37 +86,27 @@ func readDuplicateHeader(
 ) ([]string, checks.ValidationResult, bool) {
 	r := checks.NewSemicolonCSVReader(data)
 
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil || rec == nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, cancelledValidation(ctxErr), false
-			}
-
-			return nil, checks.ValidationResult{
-				OK:  true,
-				Msg: "no header line found (nothing to check for duplicates)",
-			}, false
-		}
-
-		if !isBlankHeaderRecord(rec) {
-			return rec, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankHeaderRecord(record []string) bool {
-	for _, col := range record {
-		if !checks.IsBlankUnicode([]byte(col)) {
-			return false
-		}
+	header, err := checks.ReadFirstNonBlankCSVRecord(ctx, r)
+	if err == nil {
+		return header, checks.ValidationResult{}, true
 	}
 
-	return true
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return nil, checks.CancelledValidation(ctxErr), false
+	}
+
+	if errors.Is(err, io.EOF) {
+		return nil, checks.ValidationResult{
+			OK:  true,
+			Msg: "no header line found (nothing to check for duplicates)",
+		}, false
+	}
+
+	return nil, checks.ValidationResult{
+		OK:  false,
+		Msg: "cannot parse header with semicolon delimiter",
+		Err: err,
+	}, false
 }
 
 type duplicateHeaderStat struct {
@@ -128,7 +124,7 @@ func findDuplicateHeaderCells(ctx context.Context, header []string) ([]string, e
 			return nil, err
 		}
 
-		key := duplicateHeaderKey(col)
+		key := checks.NormalizeStr(col)
 		sample := duplicateHeaderSample(col)
 
 		stat, ok := seen[key]
@@ -156,10 +152,6 @@ func findDuplicateHeaderCells(ctx context.Context, header []string) ([]string, e
 	return dups, nil
 }
 
-func duplicateHeaderKey(col string) string {
-	return strings.ToLower(strings.TrimSpace(col))
-}
-
 func duplicateHeaderSample(col string) string {
 	sample := strings.TrimSpace(col)
 	if sample == "" {
@@ -167,12 +159,4 @@ func duplicateHeaderSample(col string) string {
 	}
 
 	return sample
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

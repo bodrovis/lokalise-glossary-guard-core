@@ -1,7 +1,6 @@
 package empty_lines
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -27,12 +26,7 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 	}
 
 	if len(a.Data) == 0 {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "empty file",
-		}, nil
+		return checks.NoChange(a, "empty file"), nil
 	}
 
 	result, err := removeEmptyLines(ctx, a.Data)
@@ -41,12 +35,10 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 	}
 
 	if result.dropped == 0 {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      "",
-			DidChange: false,
-			Note:      "no empty lines to remove",
-		}, nil
+		return checks.NoChange(
+			a,
+			"no empty lines to remove",
+		), nil
 	}
 
 	return checks.FixResult{
@@ -60,7 +52,7 @@ func fixRemoveEmptyLines(ctx context.Context, a checks.Artifact) (checks.FixResu
 func removeEmptyLines(ctx context.Context, data []byte) (removeEmptyLinesResult, error) {
 	fixer := newEmptyLineFixer(data)
 
-	scanner := newEmptyLineFixScanner(data)
+	scanner := checks.NewLineScanner(data, maxScannedLineSize)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return removeEmptyLinesResult{}, err
@@ -74,13 +66,6 @@ func removeEmptyLines(ctx context.Context, data []byte) (removeEmptyLinesResult,
 	}
 
 	return fixer.result(), nil
-}
-
-func newEmptyLineFixScanner(data []byte) *bufio.Scanner {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64<<10), maxScannedLineSize)
-
-	return scanner
 }
 
 type emptyLineFixer struct {
@@ -97,7 +82,7 @@ func newEmptyLineFixer(data []byte) *emptyLineFixer {
 }
 
 func (f *emptyLineFixer) consumeLine(line []byte) {
-	line = normalizeScannedLine(line)
+	line = checks.TrimTrailingCR(line)
 
 	if checks.IsBlankUnicode(line) {
 		f.dropped++

@@ -30,3 +30,7 @@ func AnyNonEmpty(rec []string) bool {
 	}
 	return false
 }
+
+func NormalizeStr(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}

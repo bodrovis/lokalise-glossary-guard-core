@@ -49,7 +49,7 @@ func runWarnDuplicateTermValues(ctx context.Context, a checks.Artifact, opts che
 // We report up to 10 offending term groups in the message, each annotated with row numbers (1-based).
 func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
@@ -62,12 +62,16 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 
 	r := checks.NewSemicolonCSVReader(data)
 
-	header, rowNum, res, ok := readTermHeader(ctx, r)
+	header, rowNum, res, ok := checks.ReadFirstNonBlankHeaderWithRow(
+		ctx,
+		r,
+		"no header line found (nothing to validate for duplicate term values)",
+	)
 	if !ok {
 		return res
 	}
 
-	termCol := findTermColumn(header)
+	termCol := checks.FindHeaderColumn(header, "term")
 	if termCol < 0 {
 		return checks.ValidationResult{
 			OK:  true,
@@ -78,7 +82,7 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 	dups, err := findDuplicateTerms(ctx, r, rowNum, termCol)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return cancelledValidation(ctxErr)
+			return checks.CancelledValidation(ctxErr)
 		}
 
 		return checks.ValidationResult{
@@ -101,69 +105,6 @@ func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) che
 	}
 }
 
-type csvReader interface {
-	Read() ([]string, error)
-}
-
-func readTermHeader(
-	ctx context.Context,
-	r csvReader,
-) ([]string, int, checks.ValidationResult, bool) {
-	rowNum := 0
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, rowNum, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, rowNum, checks.ValidationResult{
-					OK:  true,
-					Msg: "no header line found (nothing to validate for duplicate term values)",
-				}, false
-			}
-
-			return nil, rowNum, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		rowNum++
-
-		if !isBlankCSVRecord(rec) {
-			return rec, rowNum, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, field := range record {
-		if !checks.IsBlankUnicode([]byte(field)) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func findTermColumn(header []string) int {
-	for i, col := range header {
-		if normalizeHeaderCell(col) == "term" {
-			return i
-		}
-	}
-
-	return -1
-}
-
-func normalizeHeaderCell(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
-}
-
 type duplicateTermInfo struct {
 	term string
 	rows []int
@@ -176,7 +117,7 @@ type termRows struct {
 
 func findDuplicateTerms(
 	ctx context.Context,
-	r csvReader,
+	r checks.CSVReader,
 	rowNum int,
 	termCol int,
 ) ([]duplicateTermInfo, error) {
@@ -205,7 +146,7 @@ func findDuplicateTerms(
 
 		rowNum++
 
-		if isBlankCSVRecord(rec) {
+		if checks.IsBlankCSVRecord(rec) {
 			continue
 		}
 
@@ -303,12 +244,4 @@ func joinIntSlice(nums []int, sep string) string {
 	}
 
 	return b.String()
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

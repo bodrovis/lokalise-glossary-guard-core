@@ -3,7 +3,6 @@ package checks
 import (
 	"errors"
 	"sort"
-	"strings"
 	"sync"
 )
 
@@ -14,7 +13,7 @@ var (
 
 // Lookup returns a registered check by its case-insensitive name.
 func Lookup(name string) (CheckUnit, bool) {
-	name = normalizeName(name)
+	name = NormalizeStr(name)
 
 	mu.RLock()
 	c, ok := byName[name]
@@ -30,7 +29,7 @@ func Register(c CheckUnit) (bool, error) {
 		return false, errors.New("checks.Register: nil check")
 	}
 
-	name := normalizeName(c.Name())
+	name := NormalizeStr(c.Name())
 	if name == "" {
 		return false, errors.New("checks.Register: empty name")
 	}
@@ -58,8 +57,8 @@ func ListSorted() []CheckUnit {
 			return pi < pj
 		}
 
-		ki := normalizeName(out[i].Name())
-		kj := normalizeName(out[j].Name())
+		ki := NormalizeStr(out[i].Name())
+		kj := NormalizeStr(out[j].Name())
 		if ki != kj {
 			return ki < kj
 		}
@@ -87,8 +86,4 @@ func registrySnapshot() []CheckUnit {
 	}
 
 	return out
-}
-
-func normalizeName(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
 }

@@ -104,13 +104,17 @@ func RunWithFix(ctx context.Context, a Artifact, opts RunOptions, r RunRecipe) C
 	return OutcomeWithFinal(st, r.Name, applied, final)
 }
 
-func NoFix(a Artifact, note string) (FixResult, error) {
+func NoChange(a Artifact, note string) FixResult {
 	return FixResult{
 		Data:      a.Data,
 		Path:      "",
 		DidChange: false,
 		Note:      note,
-	}, ErrNoFix
+	}
+}
+
+func NoFix(a Artifact, note string) (FixResult, error) {
+	return NoChange(a, note), ErrNoFix
 }
 
 // panic-safe wrappers

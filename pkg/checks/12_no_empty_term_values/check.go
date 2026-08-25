@@ -43,7 +43,7 @@ func runNoEmptyTermValues(ctx context.Context, a checks.Artifact, opts checks.Ru
 
 func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
@@ -56,12 +56,16 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 
 	r := checks.NewSemicolonCSVReader(data)
 
-	header, rowNum, res, ok := readTermHeader(ctx, r)
+	header, rowNum, res, ok := checks.ReadFirstNonBlankHeaderWithRow(
+		ctx,
+		r,
+		"no header line found (nothing to validate for empty term values)",
+	)
 	if !ok {
 		return res
 	}
 
-	termCol := findTermColumn(header)
+	termCol := checks.FindHeaderColumn(header, "term")
 	if termCol < 0 {
 		return checks.ValidationResult{
 			OK:  true,
@@ -72,7 +76,7 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 	badRows, err := findRowsWithEmptyTerm(ctx, r, rowNum, termCol)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return cancelledValidation(ctxErr)
+			return checks.CancelledValidation(ctxErr)
 		}
 
 		return checks.ValidationResult{
@@ -95,72 +99,9 @@ func validateNoEmptyTermValues(ctx context.Context, a checks.Artifact) checks.Va
 	}
 }
 
-type csvReader interface {
-	Read() ([]string, error)
-}
-
-func readTermHeader(
-	ctx context.Context,
-	r csvReader,
-) ([]string, int, checks.ValidationResult, bool) {
-	rowNum := 0
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, rowNum, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, rowNum, checks.ValidationResult{
-					OK:  true,
-					Msg: "no header line found (nothing to validate for empty term values)",
-				}, false
-			}
-
-			return nil, rowNum, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		rowNum++
-
-		if !isBlankCSVRecord(rec) {
-			return rec, rowNum, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, field := range record {
-		if !checks.IsBlankUnicode([]byte(field)) {
-			return false
-		}
-	}
-
-	return true
-}
-
-func findTermColumn(header []string) int {
-	for i, col := range header {
-		if normalizeHeaderCell(col) == "term" {
-			return i
-		}
-	}
-
-	return -1
-}
-
-func normalizeHeaderCell(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
-}
-
 func findRowsWithEmptyTerm(
 	ctx context.Context,
-	r csvReader,
+	r checks.CSVReader,
 	rowNum int,
 	termCol int,
 ) ([]int, error) {
@@ -188,7 +129,7 @@ func findRowsWithEmptyTerm(
 
 		rowNum++
 
-		if isBlankCSVRecord(rec) {
+		if checks.IsBlankCSVRecord(rec) {
 			continue
 		}
 
@@ -204,14 +145,6 @@ func hasEmptyTermValue(record []string, termCol int) bool {
 	}
 
 	return checks.IsBlankUnicode([]byte(record[termCol]))
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }
 
 func emptyTermRowsMessage(rows []int) string {

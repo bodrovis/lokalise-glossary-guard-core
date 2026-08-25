@@ -11,14 +11,18 @@ import (
 )
 
 // fixUTF8 re-encodes input to UTF-8 without BOM.
-func fixUTF8(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
+func fixUTF8(
+	ctx context.Context,
+	a checks.Artifact,
+) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
 
 	data := a.Data
+
 	if len(data) == 0 {
-		return checks.FixResult{Data: data, Note: "empty file"}, nil
+		return checks.NoChange(a, "empty file"), nil
 	}
 
 	if res, ok, err := fixBOMEncoded(ctx, data); ok || err != nil {
@@ -30,7 +34,7 @@ func fixUTF8(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
 	}
 
 	if utf8.Valid(data) {
-		return fixValidUTF8(data), nil
+		return checks.NoChange(a, "already valid UTF-8"), nil
 	}
 
 	return fixDetectedEncoding(data)
@@ -101,33 +105,23 @@ func fixUTF16NoBOM(ctx context.Context, data []byte) (checks.FixResult, bool, er
 	), true, nil
 }
 
-func fixValidUTF8(data []byte) checks.FixResult {
-	trimmed := bytes.TrimPrefix(data, utf8BOM)
-	if !bytes.Equal(trimmed, data) {
-		return checks.FixResult{
-			Data:      trimmed,
-			DidChange: true,
-			Note:      "removed UTF-8 BOM",
-		}
-	}
-
-	return checks.FixResult{
-		Data: data,
-		Note: "already valid UTF-8",
-	}
-}
-
 func fixDetectedEncoding(data []byte) (checks.FixResult, error) {
 	enc, name, _ := charset.DetermineEncoding(data, "")
 
 	decoded, err := enc.NewDecoder().Bytes(data)
 	if err != nil {
-		return checks.FixResult{}, fmt.Errorf("decode using %s: %w", name, err)
+		return checks.FixResult{},
+			fmt.Errorf("decode using %s: %w", name, err)
 	}
 
-	decoded = bytes.TrimPrefix(decoded, utf8BOM)
+	decoded = checks.StripUTF8BOM(decoded)
+
 	if !utf8.Valid(decoded) {
-		return checks.FixResult{}, fmt.Errorf("failed to produce valid UTF-8 (source=%s)", name)
+		return checks.FixResult{},
+			fmt.Errorf(
+				"failed to produce valid UTF-8 (source=%s)",
+				name,
+			)
 	}
 
 	noteName := name
@@ -135,16 +129,13 @@ func fixDetectedEncoding(data []byte) (checks.FixResult, error) {
 		noteName = "detected UTF-8"
 	}
 
-	didChange := !bytes.Equal(decoded, data)
-	note := fmt.Sprintf("re-encoded from %s to UTF-8 (no BOM)", noteName)
-	if !didChange {
-		note = "data unchanged; valid UTF-8"
-	}
-
 	return checks.FixResult{
 		Data:      decoded,
-		DidChange: didChange,
-		Note:      note,
+		DidChange: true,
+		Note: fmt.Sprintf(
+			"re-encoded from %s to UTF-8 (no BOM)",
+			noteName,
+		),
 	}, nil
 }
 

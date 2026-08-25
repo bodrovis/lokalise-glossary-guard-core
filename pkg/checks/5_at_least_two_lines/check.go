@@ -1,8 +1,6 @@
 package at_least_two_lines
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -41,12 +39,16 @@ func runEnsureAtLeastTwoLines(ctx context.Context, a checks.Artifact, opts check
 	})
 }
 
-func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+func validateAtLeastTwoLines(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(data) {
 		return checks.ValidationResult{
 			OK:  false,
@@ -54,10 +56,14 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 		}
 	}
 
-	ok, err := hasAtLeastNonEmptyLines(ctx, data, requiredNonEmptyLines)
+	ok, err := hasAtLeastNonEmptyLines(
+		ctx,
+		data,
+		requiredNonEmptyLines,
+	)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return cancelledValidation(ctxErr)
+			return checks.CancelledValidation(ctxErr)
 		}
 
 		return checks.ValidationResult{
@@ -68,7 +74,10 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 	}
 
 	if ok {
-		return checks.ValidationResult{OK: true, Msg: "has ≥2 lines"}
+		return checks.ValidationResult{
+			OK:  true,
+			Msg: "has ≥2 lines",
+		}
 	}
 
 	return checks.ValidationResult{
@@ -77,10 +86,15 @@ func validateAtLeastTwoLines(ctx context.Context, a checks.Artifact) checks.Vali
 	}
 }
 
-func hasAtLeastNonEmptyLines(ctx context.Context, data []byte, want int) (bool, error) {
-	scanner := newLineScanner(data)
+func hasAtLeastNonEmptyLines(
+	ctx context.Context,
+	data []byte,
+	want int,
+) (bool, error) {
+	scanner := checks.NewLineScanner(data, maxScannedLineSize)
 
 	nonEmpty := 0
+
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return false, err
@@ -102,29 +116,8 @@ func hasAtLeastNonEmptyLines(ctx context.Context, data []byte, want int) (bool, 
 	return false, nil
 }
 
-func newLineScanner(data []byte) *bufio.Scanner {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	scanner.Buffer(make([]byte, 0, 64<<10), maxScannedLineSize)
-
-	return scanner
-}
-
 func isNonEmptyCSVLine(line []byte) bool {
-	return !checks.IsBlankUnicode(normalizeScannedLine(line))
-}
-
-func normalizeScannedLine(line []byte) []byte {
-	if n := len(line); n > 0 && line[n-1] == '\r' {
-		return line[:n-1]
-	}
-
-	return line
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
+	return !checks.IsBlankUnicode(
+		checks.TrimTrailingCR(line),
+	)
 }

@@ -37,70 +37,28 @@ func runEnsureAllowedColumnsHeader(ctx context.Context, a checks.Artifact, opts 
 	})
 }
 
-func validateAllowedColumnsHeader(ctx context.Context, a checks.Artifact) checks.ValidationResult {
-	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
-	}
+func validateAllowedColumnsHeader(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
+	cleanArtifact := a
+	cleanArtifact.Data = checks.StripUTF8BOM(a.Data)
 
-	data := checks.StripUTF8BOM(a.Data)
-	if checks.IsBlankUnicode(data) {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "cannot check header: no usable content",
-		}
-	}
-
-	header, res, ok := readAllowedColumnsHeader(ctx, data)
+	header, res, ok := checks.ReadFirstNonBlankSemicolonHeader(
+		ctx,
+		cleanArtifact,
+		"cannot check header: no usable content",
+	)
 	if !ok {
 		return res
 	}
 
 	report, err := inspectAllowedColumns(ctx, header, a.Langs)
 	if err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	return allowedColumnsValidationResult(report)
-}
-
-func readAllowedColumnsHeader(
-	ctx context.Context,
-	data []byte,
-) ([]string, checks.ValidationResult, bool) {
-	r := checks.NewSemicolonCSVReader(data)
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if ctxErr := ctx.Err(); ctxErr != nil {
-				return nil, cancelledValidation(ctxErr), false
-			}
-
-			return nil, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		if !isBlankCSVRecord(rec) {
-			return rec, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, col := range record {
-		if !checks.IsBlankUnicode([]byte(col)) {
-			return false
-		}
-	}
-
-	return true
 }
 
 type allowedColumnsReport struct {
@@ -109,37 +67,6 @@ type allowedColumnsReport struct {
 	unexpectedLangs       []string
 	missingLangColumns    []string
 	detectedLangsNoConfig []string
-}
-
-type allowedLanguages struct {
-	keys []string
-	set  map[string]string
-}
-
-func newAllowedLanguages(langs []string) allowedLanguages {
-	out := allowedLanguages{
-		set: make(map[string]string, len(langs)),
-	}
-
-	for _, lang := range langs {
-		key := normalizeLangKey(lang)
-		if key == "" {
-			continue
-		}
-
-		if _, exists := out.set[key]; exists {
-			continue
-		}
-
-		out.keys = append(out.keys, key)
-		out.set[key] = key
-	}
-
-	return out
-}
-
-func (l allowedLanguages) hasAny() bool {
-	return len(l.keys) > 0
 }
 
 type languagePresence struct {
@@ -152,24 +79,36 @@ func inspectAllowedColumns(
 	cols []string,
 	langs []string,
 ) (allowedColumnsReport, error) {
-	allowed := newAllowedLanguages(langs)
+	declared := newDeclaredLanguages(langs)
 
 	report := allowedColumnsReport{
-		hasAllowedConfig: allowed.hasAny(),
+		hasAllowedConfig: declared.hasAny(),
 	}
 
-	seen := make(map[string]languagePresence, len(allowed.keys))
+	seen := make(
+		map[string]languagePresence,
+		len(declared.order),
+	)
 
 	for _, col := range cols {
 		if err := ctx.Err(); err != nil {
 			return allowedColumnsReport{}, err
 		}
 
-		inspectAllowedColumn(&report, seen, allowed, col)
+		inspectAllowedColumn(
+			&report,
+			seen,
+			declared,
+			col,
+		)
 	}
 
-	if allowed.hasAny() {
-		report.missingLangColumns = missingDeclaredLanguageColumns(allowed, seen)
+	if declared.hasAny() {
+		report.missingLangColumns =
+			missingDeclaredLanguageColumns(
+				declared,
+				seen,
+			)
 	}
 
 	return report, nil
@@ -178,7 +117,7 @@ func inspectAllowedColumns(
 func inspectAllowedColumn(
 	report *allowedColumnsReport,
 	seen map[string]languagePresence,
-	allowed allowedLanguages,
+	declared declaredLanguages,
 	col string,
 ) {
 	colTrim := strings.TrimSpace(col)
@@ -193,33 +132,47 @@ func inspectAllowedColumn(
 
 	langCol, isLangLike := parseLangColumn(colTrim)
 
-	if allowed.hasAny() {
+	if declared.hasAny() {
 		if isLangLike {
-			if _, ok := allowed.set[langCol.key]; ok {
+			if declared.contains(langCol.key) {
 				p := seen[langCol.key]
+
 				if langCol.description {
 					p.description = true
 				} else {
 					p.value = true
 				}
+
 				seen[langCol.key] = p
 				return
 			}
 
-			report.unexpectedLangs = appendLangIfMissing(report.unexpectedLangs, langCol.base)
+			report.unexpectedLangs = appendLangIfMissing(
+				report.unexpectedLangs,
+				langCol.base,
+			)
 			return
 		}
 
-		report.unknownCols = appendStringIfMissingFold(report.unknownCols, colTrim)
+		report.unknownCols = appendStringIfMissingFold(
+			report.unknownCols,
+			colTrim,
+		)
 		return
 	}
 
 	if isLangLike {
-		report.detectedLangsNoConfig = appendLangIfMissing(report.detectedLangsNoConfig, langCol.base)
+		report.detectedLangsNoConfig = appendLangIfMissing(
+			report.detectedLangsNoConfig,
+			langCol.base,
+		)
 		return
 	}
 
-	report.unknownCols = appendStringIfMissingFold(report.unknownCols, colTrim)
+	report.unknownCols = appendStringIfMissingFold(
+		report.unknownCols,
+		colTrim,
+	)
 }
 
 type parsedLangColumn struct {
@@ -270,12 +223,12 @@ func normalizeLangKey(lang string) string {
 }
 
 func missingDeclaredLanguageColumns(
-	allowed allowedLanguages,
+	declared declaredLanguages,
 	seen map[string]languagePresence,
 ) []string {
 	var missing []string
 
-	for _, key := range allowed.keys {
+	for _, key := range declared.order {
 		p := seen[key]
 
 		if !p.value {
@@ -283,7 +236,10 @@ func missingDeclaredLanguageColumns(
 		}
 
 		if !p.description {
-			missing = append(missing, key+"_description")
+			missing = append(
+				missing,
+				key+"_description",
+			)
 		}
 	}
 
@@ -331,14 +287,6 @@ func allowedColumnsValidationResult(report allowedColumnsReport) checks.Validati
 	return checks.ValidationResult{
 		OK:  true,
 		Msg: "header columns are allowed",
-	}
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
 	}
 }
 

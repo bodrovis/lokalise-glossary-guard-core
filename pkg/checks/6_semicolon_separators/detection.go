@@ -1,8 +1,6 @@
 package semicolon_separator
 
-import (
-	"context"
-)
+import "context"
 
 type separatorReport struct {
 	semicolonOK bool
@@ -10,28 +8,29 @@ type separatorReport struct {
 	tabOK       bool
 }
 
-func detectSeparators(ctx context.Context, data []byte) (separatorReport, error) {
+func detectSeparators(
+	ctx context.Context,
+	data []byte,
+) (separatorReport, error) {
 	semicolonOK, err := attemptRectParse(ctx, data, ';')
 	if err != nil {
 		return separatorReport{}, err
 	}
+
 	if semicolonOK {
-		return separatorReport{semicolonOK: true}, nil
+		return separatorReport{
+			semicolonOK: true,
+		}, nil
 	}
 
-	commaOK, err := attemptRectParse(ctx, data, ',')
-	if err != nil {
-		return separatorReport{}, err
-	}
-
-	tabOK, err := attemptRectParse(ctx, data, '\t')
+	alts, err := detectAlternativeDelimiters(ctx, data)
 	if err != nil {
 		return separatorReport{}, err
 	}
 
 	return separatorReport{
-		commaOK: commaOK,
-		tabOK:   tabOK,
+		commaOK: alts.commaOK,
+		tabOK:   alts.tabOK,
 	}, nil
 }
 

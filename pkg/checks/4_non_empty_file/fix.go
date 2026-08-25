@@ -1,7 +1,6 @@
 package non_empty_file
 
 import (
-	"bytes"
 	"context"
 	"strings"
 
@@ -20,15 +19,21 @@ var baseHeaderFields = []string{
 // fixAddHeaderIfEmpty inserts a minimal CSV header when the file is effectively empty.
 // "Empty" means the content contains only whitespace and/or zero-width/invisible runes.
 // It does not append a trailing line ending. If the file already has content, it is left unchanged.
-func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
+func fixAddHeaderIfEmpty(
+	ctx context.Context,
+	a checks.Artifact,
+) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
 
-	if !isEffectivelyEmpty(data) {
-		return noHeaderInserted(a), nil
+	if !checks.IsBlankUnicode(data) {
+		return checks.NoChange(
+			a,
+			"file already has data; no header inserted",
+		), nil
 	}
 
 	header := buildCSVHeader(a.Langs)
@@ -39,22 +44,6 @@ func fixAddHeaderIfEmpty(ctx context.Context, a checks.Artifact) (checks.FixResu
 		DidChange: true,
 		Note:      "inserted CSV header",
 	}, nil
-}
-
-func isEffectivelyEmpty(data []byte) bool {
-	// Keep the old behavior:
-	// - raw blank-looking content counts as empty
-	// - TrimSpace-normalized blank-looking content also counts as empty
-	return checks.IsBlankUnicode(data) || checks.IsBlankUnicode(bytes.TrimSpace(data))
-}
-
-func noHeaderInserted(a checks.Artifact) checks.FixResult {
-	return checks.FixResult{
-		Data:      a.Data,
-		Path:      "",
-		DidChange: false,
-		Note:      "file already has data; no header inserted",
-	}
 }
 
 func buildCSVHeader(langs []string) string {
@@ -74,7 +63,7 @@ func appendLanguageFields(fields *[]string, langs []string) {
 	seen := make(map[string]struct{}, len(langs))
 
 	for _, lang := range langs {
-		lc := normalizeLang(lang)
+		lc := checks.NormalizeStr(lang)
 		if lc == "" {
 			continue
 		}
@@ -86,8 +75,4 @@ func appendLanguageFields(fields *[]string, langs []string) {
 
 		*fields = append(*fields, lc, lc+"_description")
 	}
-}
-
-func normalizeLang(lang string) string {
-	return strings.ToLower(strings.TrimSpace(lang))
 }

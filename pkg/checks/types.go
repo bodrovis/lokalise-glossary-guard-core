@@ -63,6 +63,14 @@ type ValidationResult struct {
 	Err error
 }
 
+func CancelledValidation(err error) ValidationResult {
+	return ValidationResult{
+		OK:  false,
+		Msg: "validation cancelled",
+		Err: err,
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Artifact
 // ─────────────────────────────────────────────────────────────────────────────

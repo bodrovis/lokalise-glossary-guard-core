@@ -2,8 +2,6 @@ package orphan_locale_descriptions
 
 import (
 	"context"
-	"errors"
-	"io"
 	"strconv"
 	"strings"
 
@@ -44,7 +42,7 @@ func runWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact, opt
 
 func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
@@ -57,14 +55,18 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 
 	r := checks.NewSemicolonCSVReader(data)
 
-	header, res, ok := readOrphanLocaleHeader(ctx, r)
+	header, res, ok := checks.ReadFirstNonBlankHeader(
+		ctx,
+		r,
+		"no header line found (nothing to validate for orphan locale descriptions)",
+	)
 	if !ok {
 		return res
 	}
 
 	orphans, err := findOrphanLocaleDescriptions(ctx, header)
 	if err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	if len(orphans) == 0 {
@@ -80,51 +82,6 @@ func validateWarnOrphanLocaleDescriptions(ctx context.Context, a checks.Artifact
 	}
 }
 
-type csvReader interface {
-	Read() ([]string, error)
-}
-
-func readOrphanLocaleHeader(
-	ctx context.Context,
-	r csvReader,
-) ([]string, checks.ValidationResult, bool) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, checks.ValidationResult{
-					OK:  true,
-					Msg: "no header line found (nothing to validate for orphan locale descriptions)",
-				}, false
-			}
-
-			return nil, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		if !isBlankCSVRecord(rec) {
-			return rec, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, field := range record {
-		if !checks.IsBlankUnicode([]byte(field)) {
-			return false
-		}
-	}
-
-	return true
-}
-
 func findOrphanLocaleDescriptions(ctx context.Context, header []string) ([]string, error) {
 	allCols := make(map[string]struct{}, len(header))
 	var candidateOrder []string
@@ -135,7 +92,7 @@ func findOrphanLocaleDescriptions(ctx context.Context, header []string) ([]strin
 			return nil, err
 		}
 
-		name := normalizeHeaderCell(col)
+		name := checks.NormalizeStr(col)
 		if name == "" {
 			continue
 		}
@@ -168,10 +125,6 @@ func findOrphanLocaleDescriptions(ctx context.Context, header []string) ([]strin
 	}
 
 	return orphans, nil
-}
-
-func normalizeHeaderCell(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
 }
 
 func descriptionBase(name string) (string, bool) {
@@ -214,12 +167,4 @@ func orphanLocaleDescriptionsMessage(orphans []string) string {
 	b.WriteString(")")
 
 	return b.String()
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

@@ -3,6 +3,7 @@ package valid_extension
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -39,13 +40,12 @@ func runEnsureCSV(ctx context.Context, a checks.Artifact, opts checks.RunOptions
 	})
 }
 
-func validateCSVExt(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+func validateCSVExt(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{
-			OK:  false,
-			Msg: "validation cancelled",
-			Err: err,
-		}
+		return checks.CancelledValidation(err)
 	}
 
 	path := strings.TrimSpace(a.Path)
@@ -71,13 +71,5 @@ func validateCSVExt(ctx context.Context, a checks.Artifact) checks.ValidationRes
 }
 
 func invalidExtensionMessage(ext string) string {
-	return `invalid file extension: ` + quoteExtension(ext) + ` (expected ".csv")`
-}
-
-func quoteExtension(ext string) string {
-	if ext == "" {
-		return `""`
-	}
-
-	return `"` + ext + `"`
+	return `invalid file extension: ` + strconv.Quote(ext) + ` (expected ".csv")`
 }

@@ -27,6 +27,7 @@ func init() {
 	if err != nil {
 		panic(checkName + ": " + err.Error())
 	}
+
 	if _, err := checks.Register(ch); err != nil {
 		panic(checkName + " register: " + err.Error())
 	}
@@ -50,10 +51,11 @@ func validateNoForbiddenNonTranslatableTerms(
 	a checks.Artifact,
 ) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return cancelledValidation(err)
+		return checks.CancelledValidation(err)
 	}
 
 	data := checks.StripUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(data) {
 		return checks.ValidationResult{
 			OK:  true,
@@ -63,12 +65,17 @@ func validateNoForbiddenNonTranslatableTerms(
 
 	r := checks.NewSemicolonCSVReader(data)
 
-	header, rowNum, res, ok := readForbiddenNonTranslatableHeader(ctx, r)
+	header, rowNum, res, ok := checks.ReadFirstNonBlankHeaderWithRow(
+		ctx,
+		r,
+		"no header line found (nothing to validate for forbidden non-translatable terms)",
+	)
 	if !ok {
 		return res
 	}
 
 	cols := findForbiddenNonTranslatableColumns(header)
+
 	if !cols.hasRequiredFlags() {
 		return checks.ValidationResult{
 			OK:  true,
@@ -76,10 +83,15 @@ func validateNoForbiddenNonTranslatableTerms(
 		}
 	}
 
-	badRows, err := findForbiddenNonTranslatableRows(ctx, r, rowNum, cols)
+	badRows, err := findForbiddenNonTranslatableRows(
+		ctx,
+		r,
+		rowNum,
+		cols,
+	)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return cancelledValidation(ctxErr)
+			return checks.CancelledValidation(ctxErr)
 		}
 
 		return checks.ValidationResult{
@@ -102,62 +114,15 @@ func validateNoForbiddenNonTranslatableTerms(
 	}
 }
 
-type csvReader interface {
-	Read() ([]string, error)
-}
-
-func readForbiddenNonTranslatableHeader(
-	ctx context.Context,
-	r csvReader,
-) ([]string, int, checks.ValidationResult, bool) {
-	rowNum := 0
-
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, rowNum, cancelledValidation(err), false
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil, rowNum, checks.ValidationResult{
-					OK:  true,
-					Msg: "no header line found (nothing to validate for forbidden non-translatable terms)",
-				}, false
-			}
-
-			return nil, rowNum, checks.ValidationResult{
-				OK:  false,
-				Msg: "cannot parse header with semicolon delimiter",
-				Err: err,
-			}, false
-		}
-
-		rowNum++
-
-		if !isBlankCSVRecord(rec) {
-			return rec, rowNum, checks.ValidationResult{}, true
-		}
-	}
-}
-
-func isBlankCSVRecord(record []string) bool {
-	for _, field := range record {
-		if !checks.IsBlankUnicode([]byte(field)) {
-			return false
-		}
-	}
-
-	return true
-}
-
 type forbiddenNonTranslatableColumns struct {
 	term         int
 	translatable int
 	forbidden    int
 }
 
-func findForbiddenNonTranslatableColumns(header []string) forbiddenNonTranslatableColumns {
+func findForbiddenNonTranslatableColumns(
+	header []string,
+) forbiddenNonTranslatableColumns {
 	cols := forbiddenNonTranslatableColumns{
 		term:         -1,
 		translatable: -1,
@@ -165,7 +130,7 @@ func findForbiddenNonTranslatableColumns(header []string) forbiddenNonTranslatab
 	}
 
 	for i, h := range header {
-		switch normalizeHeaderCell(h) {
+		switch checks.NormalizeStr(h) {
 		case "term":
 			cols.term = i
 		case "translatable":
@@ -182,10 +147,6 @@ func (c forbiddenNonTranslatableColumns) hasRequiredFlags() bool {
 	return c.translatable >= 0 && c.forbidden >= 0
 }
 
-func normalizeHeaderCell(s string) string {
-	return strings.ToLower(strings.TrimSpace(s))
-}
-
 type forbiddenNonTranslatableRow struct {
 	rowNum int
 	term   string
@@ -193,7 +154,7 @@ type forbiddenNonTranslatableRow struct {
 
 func findForbiddenNonTranslatableRows(
 	ctx context.Context,
-	r csvReader,
+	r checks.CSVReader,
 	rowNum int,
 	cols forbiddenNonTranslatableColumns,
 ) ([]forbiddenNonTranslatableRow, error) {
@@ -221,7 +182,7 @@ func findForbiddenNonTranslatableRows(
 
 		rowNum++
 
-		if isBlankCSVRecord(rec) {
+		if checks.IsBlankCSVRecord(rec) {
 			continue
 		}
 
@@ -252,7 +213,9 @@ func recordValue(record []string, pos int) string {
 	return strings.TrimSpace(record[pos])
 }
 
-func forbiddenNonTranslatableMessage(rows []forbiddenNonTranslatableRow) string {
+func forbiddenNonTranslatableMessage(
+	rows []forbiddenNonTranslatableRow,
+) string {
 	limit := len(rows)
 	if limit > maxReportedRows {
 		limit = maxReportedRows
@@ -291,12 +254,4 @@ func forbiddenNonTranslatableMessage(rows []forbiddenNonTranslatableRow) string 
 	b.WriteString(" terms)")
 
 	return b.String()
-}
-
-func cancelledValidation(err error) checks.ValidationResult {
-	return checks.ValidationResult{
-		OK:  false,
-		Msg: "validation cancelled",
-		Err: err,
-	}
 }

@@ -3,35 +3,35 @@ package allowed_columns_header
 import (
 	"bytes"
 	"context"
-	"encoding/csv"
-	"errors"
-	"io"
 	"strings"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
 )
 
-func fixAllowedColumnsHeader(ctx context.Context, a checks.Artifact) (checks.FixResult, error) {
+func fixAllowedColumnsHeader(
+	ctx context.Context,
+	a checks.Artifact,
+) (checks.FixResult, error) {
 	if err := ctx.Err(); err != nil {
 		return checks.FixResult{}, err
 	}
 
-	source, early, err := prepareAllowedColumnsFix(ctx, a)
+	source, noFixNote, err := prepareAllowedColumnsFix(ctx, a)
 	if err != nil {
 		return checks.FixResult{}, err
 	}
-	if early != nil {
-		return early.result, early.err
+
+	if noFixNote != "" {
+		return checks.NoFix(a, noFixNote)
 	}
 
 	plan := buildAllowedColumnsPlan(source.header(), a.Langs)
+
 	if plan.isNoOp(source.header()) {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      a.Path,
-			DidChange: false,
-			Note:      "header already normalized",
-		}, nil
+		return checks.NoChange(
+			a,
+			"header already normalized",
+		), nil
 	}
 
 	outRecs, err := applyAllowedColumnsPlan(ctx, source.records, plan)
@@ -39,17 +39,24 @@ func fixAllowedColumnsHeader(ctx context.Context, a checks.Artifact) (checks.Fix
 		return checks.FixResult{}, err
 	}
 
-	outTail, err := serializeAllowedColumnsRecords(ctx, outRecs, source.lineSep, source.keepFinal)
+	outTail, err := checks.WriteSemicolonCSVRecords(
+		ctx,
+		outRecs,
+		source.lineSep,
+		source.keepFinal,
+	)
 	if err != nil {
-		return checks.FixResult{
-			Data:      a.Data,
-			Path:      a.Path,
-			DidChange: false,
-			Note:      "failed to serialize CSV: " + err.Error(),
-		}, err
+		return checks.NoChange(
+			a,
+			"failed to serialize CSV: "+err.Error(),
+		), err
 	}
 
-	out := stitchAllowedColumnsFix(source.bom, source.before, outTail)
+	out := stitchAllowedColumnsFix(
+		source.bom,
+		source.before,
+		outTail,
+	)
 
 	return checks.FixResult{
 		Data:      out,
@@ -75,108 +82,52 @@ func (s allowedColumnsFixSource) header() []string {
 	return s.records[0]
 }
 
-type earlyAllowedColumnsFix struct {
-	result checks.FixResult
-	err    error
-}
-
 func prepareAllowedColumnsFix(
 	ctx context.Context,
 	a checks.Artifact,
-) (allowedColumnsFixSource, *earlyAllowedColumnsFix, error) {
+) (allowedColumnsFixSource, string, error) {
 	in, bom := checks.SplitUTF8BOM(a.Data)
+
 	if checks.IsBlankUnicode(in) {
-		return allowedColumnsFixSource{}, noAllowedColumnsFixEarly(a, "no usable content to fix header"), nil
+		return allowedColumnsFixSource{},
+			"no usable content to fix header",
+			nil
 	}
 
 	lineSep := checks.DetectLineEnding(in)
 	keepFinal := bytes.HasSuffix(in, []byte("\n"))
 
-	parts, ok, err := findAllowedColumnsHeaderLine(ctx, in)
+	parts, ok, err := checks.FindFirstNonBlankPhysicalLine(ctx, in)
 	if err != nil {
-		return allowedColumnsFixSource{}, nil, err
-	}
-	if !ok {
-		return allowedColumnsFixSource{}, noAllowedColumnsFixEarly(a, "no header line found"), nil
+		return allowedColumnsFixSource{}, "", err
 	}
 
-	tail := appendHeaderAndRest(parts.line, parts.rest)
+	if !ok {
+		return allowedColumnsFixSource{},
+			"no header line found",
+			nil
+	}
+
+	tail := appendHeaderAndRest(parts.Line, parts.Rest)
 
 	records, err := readAllowedColumnsRecords(ctx, tail)
 	if err != nil {
-		return allowedColumnsFixSource{}, nil, err
+		return allowedColumnsFixSource{}, "", err
 	}
+
 	if len(records) == 0 || len(records[0]) == 0 {
-		return allowedColumnsFixSource{}, noAllowedColumnsFixEarly(a, "cannot parse CSV with semicolon delimiter"), nil
+		return allowedColumnsFixSource{},
+			"cannot parse CSV with semicolon delimiter",
+			nil
 	}
 
 	return allowedColumnsFixSource{
 		bom:       bom,
-		before:    parts.before,
+		before:    parts.Before,
 		lineSep:   lineSep,
 		keepFinal: keepFinal,
 		records:   records,
-	}, nil, nil
-}
-
-func noAllowedColumnsFixEarly(a checks.Artifact, note string) *earlyAllowedColumnsFix {
-	result, err := checks.NoFix(a, note)
-
-	return &earlyAllowedColumnsFix{
-		result: result,
-		err:    err,
-	}
-}
-
-type allowedColumnsHeaderParts struct {
-	before []byte
-	line   []byte
-	rest   []byte
-}
-
-func findAllowedColumnsHeaderLine(
-	ctx context.Context,
-	data []byte,
-) (allowedColumnsHeaderParts, bool, error) {
-	pos := 0
-
-	for pos <= len(data) {
-		if err := ctx.Err(); err != nil {
-			return allowedColumnsHeaderParts{}, false, err
-		}
-
-		line, rest, found := bytes.Cut(data[pos:], []byte("\n"))
-		lineForCheck := trimTrailingCR(line)
-
-		if !checks.IsBlankUnicode(lineForCheck) {
-			headerEnd := len(data) - len(rest)
-			if !found {
-				headerEnd = len(data)
-			}
-
-			return allowedColumnsHeaderParts{
-				before: data[:pos],
-				line:   data[pos:headerEnd],
-				rest:   data[headerEnd:],
-			}, true, nil
-		}
-
-		if !found {
-			break
-		}
-
-		pos += len(line) + 1
-	}
-
-	return allowedColumnsHeaderParts{}, false, nil
-}
-
-func trimTrailingCR(line []byte) []byte {
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		return line[:len(line)-1]
-	}
-
-	return line
+	}, "", nil
 }
 
 func appendHeaderAndRest(header, rest []byte) []byte {
@@ -187,26 +138,13 @@ func appendHeaderAndRest(header, rest []byte) []byte {
 	return out
 }
 
-func readAllowedColumnsRecords(ctx context.Context, data []byte) ([][]string, error) {
+func readAllowedColumnsRecords(
+	ctx context.Context,
+	data []byte,
+) ([][]string, error) {
 	r := checks.NewSemicolonCSVReader(data)
 
-	var records [][]string
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		rec, err := r.Read()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return records, nil
-			}
-
-			return nil, err
-		}
-
-		records = append(records, rec)
-	}
+	return checks.ReadAllCSVRecords(ctx, r)
 }
 
 type allowedColumnsPlan struct {
@@ -249,7 +187,7 @@ func (p allowedColumnsPlan) isNoOp(header []string) bool {
 	}
 
 	for i := range p.keep {
-		if normalizeHeaderName(p.keep[i].label) != normalizeHeaderName(header[i]) {
+		if checks.NormalizeStr(p.keep[i].label) != checks.NormalizeStr(header[i]) {
 			return false
 		}
 
@@ -259,21 +197,6 @@ func (p allowedColumnsPlan) isNoOp(header []string) bool {
 	}
 
 	return true
-}
-
-type declaredLanguages struct {
-	order  []string
-	set    map[string]struct{}
-	labels map[string]string
-}
-
-func (d declaredLanguages) hasAny() bool {
-	return len(d.order) > 0
-}
-
-func (d declaredLanguages) contains(lang string) bool {
-	_, ok := d.set[normalizeLangKey(lang)]
-	return ok
 }
 
 type langPresence struct {
@@ -288,7 +211,7 @@ func allowedColumnFromHeader(
 	declared declaredLanguages,
 	seen map[string]langPresence,
 ) (allowedColumn, bool) {
-	normalized := normalizeHeaderName(name)
+	normalized := checks.NormalizeStr(name)
 
 	if _, ok := checks.KnownHeaders[normalized]; ok {
 		return allowedColumn{label: name, idx: idx}, true
@@ -323,14 +246,6 @@ func allowedColumnFromHeader(
 	}, true
 }
 
-func normalizedLangColumnLabel(col parsedLangColumn) string {
-	if col.description {
-		return col.key + "_description"
-	}
-
-	return col.key
-}
-
 func (p *allowedColumnsPlan) addMissingDeclaredLanguages(
 	declared declaredLanguages,
 	seen map[string]langPresence,
@@ -357,10 +272,6 @@ func (p *allowedColumnsPlan) addMissingDeclaredLanguages(
 			})
 		}
 	}
-}
-
-func normalizeHeaderName(name string) string {
-	return strings.ToLower(strings.TrimSpace(name))
 }
 
 func applyAllowedColumnsPlan(
@@ -401,88 +312,11 @@ func (p allowedColumnsPlan) headerLabels() []string {
 	return header
 }
 
-func serializeAllowedColumnsRecords(
-	ctx context.Context,
-	records [][]string,
-	lineSep string,
-	keepFinal bool,
-) ([]byte, error) {
-	var buf bytes.Buffer
-
-	w := csv.NewWriter(&buf)
-	w.Comma = ';'
-
-	for _, rec := range records {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-
-		if err := w.Write(rec); err != nil {
-			return nil, err
-		}
-	}
-
-	w.Flush()
-	if err := w.Error(); err != nil {
-		return nil, err
-	}
-
-	out := buf.Bytes()
-
-	if lineSep == "\r\n" {
-		out = bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
-	}
-
-	if !keepFinal {
-		out = trimFinalCSVWriterNewline(out)
-	}
-
-	return out, nil
-}
-
-func trimFinalCSVWriterNewline(data []byte) []byte {
-	if bytes.HasSuffix(data, []byte("\r\n")) {
-		return data[:len(data)-2]
-	}
-
-	if bytes.HasSuffix(data, []byte("\n")) {
-		return data[:len(data)-1]
-	}
-
-	return data
-}
-
 func stitchAllowedColumnsFix(bom, before, outTail []byte) []byte {
 	out := make([]byte, 0, len(bom)+len(before)+len(outTail))
 	out = append(out, bom...)
 	out = append(out, before...)
 	out = append(out, outTail...)
-
-	return out
-}
-
-func newDeclaredLanguages(langs []string) declaredLanguages {
-	out := declaredLanguages{
-		set:    make(map[string]struct{}, len(langs)),
-		labels: make(map[string]string, len(langs)),
-	}
-
-	for _, lang := range langs {
-		label := strings.TrimSpace(lang)
-		key := normalizeLangKey(label)
-
-		if key == "" {
-			continue
-		}
-
-		if _, exists := out.set[key]; exists {
-			continue
-		}
-
-		out.set[key] = struct{}{}
-		out.labels[key] = label
-		out.order = append(out.order, key)
-	}
 
 	return out
 }

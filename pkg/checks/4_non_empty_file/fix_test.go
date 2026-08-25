@@ -15,7 +15,7 @@ func buildExpectedHeader(langs []string) string {
 	fields := make([]string, 0, len(baseHeaderFields)+len(langs)*2)
 	fields = append(fields, baseHeaderFields...)
 	for _, ln := range langs {
-		ln = strings.ToLower(strings.TrimSpace(ln))
+		ln = checks.NormalizeStr(ln)
 		if ln == "" {
 			continue
 		}

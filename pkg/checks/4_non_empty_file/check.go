@@ -1,7 +1,6 @@
 package non_empty_file
 
 import (
-	"bytes"
 	"context"
 
 	"github.com/bodrovis/lokalise-glossary-guard-core/pkg/checks"
@@ -19,12 +18,17 @@ func init() {
 	if err != nil {
 		panic(checkName + ": " + err.Error())
 	}
+
 	if _, err := checks.Register(ch); err != nil {
 		panic(checkName + " register: " + err.Error())
 	}
 }
 
-func runEnsureNotEmpty(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
+func runEnsureNotEmpty(
+	ctx context.Context,
+	a checks.Artifact,
+	opts checks.RunOptions,
+) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
 		Name:             checkName,
 		Validate:         validateNotEmpty,
@@ -36,14 +40,23 @@ func runEnsureNotEmpty(ctx context.Context, a checks.Artifact, opts checks.RunOp
 	})
 }
 
-func validateNotEmpty(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+func validateNotEmpty(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
-		return checks.ValidationResult{OK: false, Msg: "validation cancelled", Err: err}
+		return checks.CancelledValidation(err)
 	}
 
-	data := bytes.TrimSpace(a.Data)
-	if checks.IsBlankUnicode(data) {
-		return checks.ValidationResult{OK: false, Msg: "empty file: no data"}
+	if checks.IsBlankUnicode(a.Data) {
+		return checks.ValidationResult{
+			OK:  false,
+			Msg: "empty file: no data",
+		}
 	}
-	return checks.ValidationResult{OK: true, Msg: "non-empty"}
+
+	return checks.ValidationResult{
+		OK:  true,
+		Msg: "non-empty",
+	}
 }
