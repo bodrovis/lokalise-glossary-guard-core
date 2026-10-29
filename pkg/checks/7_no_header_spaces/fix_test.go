@@ -145,7 +145,7 @@ func TestFixNoSpacesInHeader_BOM_CRLF_Preserve(t *testing.T) {
 		t.Fatalf("expected CRLF line endings to be preserved")
 	}
 
-	firstLine := strings.Split(strings.TrimPrefix(out, bom), "\r\n")[0]
+	firstLine, _, _ := strings.Cut(strings.TrimPrefix(out, bom), "\r\n")
 	if firstLine != "term;description;foo" {
 		t.Fatalf("header after trim mismatch: got %q", firstLine)
 	}

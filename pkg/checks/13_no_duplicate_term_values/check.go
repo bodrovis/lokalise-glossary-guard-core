@@ -30,24 +30,31 @@ func init() {
 	}
 }
 
-func runWarnDuplicateTermValues(ctx context.Context, a checks.Artifact, opts checks.RunOptions) checks.CheckOutcome {
+func runWarnDuplicateTermValues(
+	ctx context.Context,
+	a checks.Artifact,
+	opts checks.RunOptions,
+) checks.CheckOutcome {
 	return checks.RunWithFix(ctx, a, opts, checks.RunRecipe{
-		Name:             checkName,
-		Validate:         validateWarnDuplicateTermValues,
-		Fix:              fixDuplicateTermValues,
-		PassMsg:          "no duplicate term values",
-		FixedMsg:         "removed duplicate term rows",
-		AppliedMsg:       "auto-fix applied: removed duplicate term rows",
-		StatusAfterFixed: checks.Pass,
-		FailAs:           checks.Warn,
-		StillBadMsg:      "duplicate term values are still present after fix",
+		Name:     checkName,
+		Validate: validateWarnDuplicateTermValues,
+		PassMsg:  "no duplicate term values",
+		FailAs:   checks.Warn,
 	})
 }
 
-// validateWarnDuplicateTermValues scans the "term" column and warns if the same non-empty value appears in multiple rows.
-// Case-sensitive: "Apple" and "apple" are considered different terms.
-// We report up to 10 offending term groups in the message, each annotated with row numbers (1-based).
-func validateWarnDuplicateTermValues(ctx context.Context, a checks.Artifact) checks.ValidationResult {
+// validateWarnDuplicateTermValues warns when the same non-empty term
+// appears in multiple rows, regardless of its description or translations.
+//
+// Lokalise allows duplicate glossary terms, but CSV imports may merge
+// entries with the same term and overwrite their data.
+//
+// Comparison is case-sensitive. Up to 10 duplicate term groups are reported,
+// with 1-based CSV row numbers.
+func validateWarnDuplicateTermValues(
+	ctx context.Context,
+	a checks.Artifact,
+) checks.ValidationResult {
 	if err := ctx.Err(); err != nil {
 		return checks.CancelledValidation(err)
 	}
@@ -182,7 +189,7 @@ func findDuplicateTerms(
 }
 
 func termValue(record []string, termCol int) (string, bool) {
-	if termCol >= len(record) {
+	if termCol < 0 || termCol >= len(record) {
 		return "", false
 	}
 
@@ -195,15 +202,12 @@ func termValue(record []string, termCol int) (string, bool) {
 }
 
 func duplicateTermsMessage(dups []duplicateTermInfo) string {
-	limit := len(dups)
-	if limit > maxReportedTerms {
-		limit = maxReportedTerms
-	}
+	limit := min(len(dups), maxReportedTerms)
 
 	var b strings.Builder
 	b.WriteString("duplicate term values found: ")
 
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		dup := dups[i]
 
 		b.WriteString(strconv.Quote(dup.term))
@@ -217,15 +221,19 @@ func duplicateTermsMessage(dups []duplicateTermInfo) string {
 	}
 
 	if len(dups) > limit {
-		b.WriteString(" ... (total ")
-		b.WriteString(strconv.Itoa(len(dups)))
-		b.WriteString(" duplicate terms)")
-		return b.String()
+		b.WriteString(" ...")
 	}
 
 	b.WriteString(" (total ")
 	b.WriteString(strconv.Itoa(len(dups)))
-	b.WriteString(" duplicate terms)")
+	b.WriteString(" duplicate terms). ")
+
+	b.WriteString(
+		"Lokalise allows duplicate glossary terms, but CSV imports " +
+			"may merge entries with the same term and overwrite " +
+			"descriptions or translations. Review these entries " +
+			"before importing.",
+	)
 
 	return b.String()
 }

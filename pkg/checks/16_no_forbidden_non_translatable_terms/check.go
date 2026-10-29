@@ -216,10 +216,7 @@ func recordValue(record []string, pos int) string {
 func forbiddenNonTranslatableMessage(
 	rows []forbiddenNonTranslatableRow,
 ) string {
-	limit := len(rows)
-	if limit > maxReportedRows {
-		limit = maxReportedRows
-	}
+	limit := min(len(rows), maxReportedRows)
 
 	var b strings.Builder
 	b.WriteString("terms cannot be both forbidden and non-translatable: ")

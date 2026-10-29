@@ -201,15 +201,12 @@ func isValidFlagValue(value string) bool {
 }
 
 func invalidFlagsMessage(invalids []invalidFlagValue) string {
-	limit := len(invalids)
-	if limit > maxReportedFlagErrors {
-		limit = maxReportedFlagErrors
-	}
+	limit := min(len(invalids), maxReportedFlagErrors)
 
 	var b strings.Builder
 	b.WriteString("invalid values in flag columns: ")
 
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		inv := invalids[i]
 
 		b.WriteString(inv.colName)

@@ -81,7 +81,7 @@ func TestNoEmptyLines_Run_WithPositions_Truncate(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("h1\n")
 	// make 15 empty lines
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		b.WriteString("\n")
 	}
 	b.WriteString("tail\n")
@@ -195,7 +195,7 @@ func TestEmptyLinesReport_AddCapsReportedLines(t *testing.T) {
 		)
 	}
 
-	for i := 0; i < maxReportedLines; i++ {
+	for i := range maxReportedLines {
 		want := i + 1
 		if report.first[i] != want {
 			t.Fatalf(

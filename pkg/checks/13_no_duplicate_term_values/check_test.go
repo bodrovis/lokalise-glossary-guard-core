@@ -1,7 +1,7 @@
 package duplicate_term_values
 
 import (
-	"context"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,10 +12,7 @@ import (
 func TestValidateWarnDuplicateTermValues_NoDuplicates_PASS(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
-	csv := "" +
-		"term;description;notes\n" +
+	csv := "term;description;notes\n" +
 		"Apple;desc A;meta1\n" +
 		"Banana;desc B;meta2\n" +
 		"Cherry;desc C;meta3\n"
@@ -25,7 +22,7 @@ func TestValidateWarnDuplicateTermValues_NoDuplicates_PASS(t *testing.T) {
 		Path: "nodup.csv",
 	}
 
-	res := validateWarnDuplicateTermValues(ctx, a)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
 
 	if !res.OK {
 		t.Fatalf("expected OK=true, got false with Msg=%q", res.Msg)
@@ -41,132 +38,201 @@ func TestValidateWarnDuplicateTermValues_NoDuplicates_PASS(t *testing.T) {
 func TestValidateWarnDuplicateTermValues_WithDuplicates_Warn(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
-	// "Apple" appears twice (rows 2 and 5, 1-based)
-	// "Banana" is unique
-	// "apple" (lowercase) is different term because we're case-sensitive
-	csv := "" +
-		"term;description\n" +
-		"Apple;red\n" + // line 2
-		"Banana;yellow\n" + // line 3
-		"apple;green\n" + // line 4 (different from "Apple")
-		"Apple;sweet\n" // line 5 duplicate of first "Apple"
+	// Different descriptions must not prevent duplicate detection.
+	// Comparison remains case-sensitive.
+	csv := "term;description\n" +
+		"Apple;red\n" +
+		"Banana;yellow\n" +
+		"apple;green\n" +
+		"Apple;sweet\n"
 
 	a := checks.Artifact{
 		Data: []byte(csv),
 		Path: "dups.csv",
 	}
 
-	res := validateWarnDuplicateTermValues(ctx, a)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
 
-	if res.OK {
-		t.Fatalf("expected OK=false because there are duplicate term values")
-	}
-	if res.Err != nil {
-		t.Fatalf("expected Err=nil (WARN, not ERROR), got %v", res.Err)
+	assertDuplicateWarning(t, res,
+		`"Apple" (rows 2, 5)`,
+		"total 1 duplicate terms",
+	)
+}
+
+func TestValidateWarnDuplicateTermValues_DifferentTranslations_Warn(t *testing.T) {
+	t.Parallel()
+
+	// Same term and description, but different target translations.
+	// These entries may contain distinct data and must be flagged.
+	csv := "term;description;ru\n" +
+		"monitor;Computer display;монитор\n" +
+		"monitor;Computer display;экран\n" +
+		"keyboard;Input device;клавиатура\n"
+
+	a := checks.Artifact{
+		Data: []byte(csv),
+		Path: "translations.csv",
 	}
 
-	if !strings.Contains(res.Msg, `"Apple"`) {
-		t.Fatalf("expected message to mention \"Apple\", got: %q", res.Msg)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
+
+	assertDuplicateWarning(t, res,
+		`"monitor" (rows 2, 3)`,
+		"total 1 duplicate terms",
+	)
+}
+
+func TestValidateWarnDuplicateTermValues_IdenticalRows_Warn(t *testing.T) {
+	t.Parallel()
+
+	// Lokalise allows identical glossary entries to exist separately.
+	// The guard must warn rather than assume they are safe to remove.
+	csv := "term;description;ru\n" +
+		"monitor;To observe activity;отслеживать\n" +
+		"monitor;To observe activity;отслеживать\n"
+
+	a := checks.Artifact{
+		Data: []byte(csv),
+		Path: "identical.csv",
 	}
 
-	if !strings.Contains(res.Msg, "2") || !strings.Contains(res.Msg, "5") {
-		t.Fatalf("expected message to mention rows 2 and 5, got: %q", res.Msg)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
+
+	assertDuplicateWarning(t, res,
+		`"monitor" (rows 2, 3)`,
+		"total 1 duplicate terms",
+	)
+}
+
+func TestValidateWarnDuplicateTermValues_NoDescriptionColumn_Warn(t *testing.T) {
+	t.Parallel()
+
+	// Duplicate detection depends only on the term column.
+	csv := "term;ru\n" +
+		"monitor;монитор\n" +
+		"monitor;отслеживать\n"
+
+	a := checks.Artifact{
+		Data: []byte(csv),
+		Path: "no-description.csv",
 	}
 
-	if !strings.Contains(res.Msg, "total 1") {
-		t.Fatalf("expected total count in message, got: %q", res.Msg)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
+
+	assertDuplicateWarning(t, res,
+		`"monitor" (rows 2, 3)`,
+		"total 1 duplicate terms",
+	)
+}
+
+func TestValidateWarnDuplicateTermValues_CaseSensitive_PASS(t *testing.T) {
+	t.Parallel()
+
+	csv := "term;description\n" +
+		"Apple;fruit\n" +
+		"apple;company\n" +
+		"APPLE;another entry\n"
+
+	a := checks.Artifact{
+		Data: []byte(csv),
+		Path: "case-sensitive.csv",
 	}
+
+	res := validateWarnDuplicateTermValues(t.Context(), a)
+
+	if !res.OK || res.Err != nil {
+		t.Fatalf("expected PASS for different casing, got %+v", res)
+	}
+}
+
+func TestValidateWarnDuplicateTermValues_WhitespaceTrimmed_Warn(t *testing.T) {
+	t.Parallel()
+
+	csv := "term;description\n" +
+		"monitor;first\n" +
+		"  monitor  ;second\n"
+
+	a := checks.Artifact{
+		Data: []byte(csv),
+		Path: "whitespace.csv",
+	}
+
+	res := validateWarnDuplicateTermValues(t.Context(), a)
+
+	assertDuplicateWarning(t, res,
+		`"monitor" (rows 2, 3)`,
+	)
 }
 
 func TestValidateWarnDuplicateTermValues_ManyDifferentDuplicates_TruncateList(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
 	var b strings.Builder
 	b.WriteString("term;description\n")
 
 	const totalDupTerms = 12
-	for i := 0; i < totalDupTerms; i++ {
+
+	for i := range totalDupTerms {
 		term := "Word" + strconv.Itoa(i)
-		b.WriteString(term + ";x\n")
-		b.WriteString(term + ";y\n")
+
+		b.WriteString(term)
+		b.WriteString(";x\n")
+		b.WriteString(term)
+		b.WriteString(";y\n")
 	}
 
-	csv := b.String()
-
 	a := checks.Artifact{
-		Data: []byte(csv),
+		Data: []byte(b.String()),
 		Path: "manydups.csv",
 	}
 
-	res := validateWarnDuplicateTermValues(ctx, a)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
 
-	if res.OK {
-		t.Fatalf("expected OK=false because we flooded duplicates")
-	}
-	if res.Err != nil {
-		t.Fatalf("expected Err=nil (WARN), got %v", res.Err)
-	}
-
-	if !strings.Contains(res.Msg, "duplicate term values found:") {
-		t.Fatalf("expected message prefix, got: %q", res.Msg)
-	}
-
-	if !strings.Contains(res.Msg, "total 12") {
-		t.Fatalf("expected total count '12' in message, got: %q", res.Msg)
-	}
+	assertDuplicateWarning(t, res,
+		"total 12 duplicate terms",
+	)
 
 	countDetailed := strings.Count(res.Msg, `"Word`)
-	if countDetailed > 10 {
-		t.Fatalf("expected at most 10 detailed dup groups, got %d in %q", countDetailed, res.Msg)
+	if countDetailed != maxReportedTerms {
+		t.Fatalf(
+			"expected exactly %d detailed groups, got %d in %q",
+			maxReportedTerms, countDetailed, res.Msg,
+		)
+	}
+
+	for _, term := range []string{`"Word10"`, `"Word11"`} {
+		if strings.Contains(res.Msg, term) {
+			t.Fatalf("unexpected truncated term %s in %q", term, res.Msg)
+		}
 	}
 }
 
 func TestValidateWarnDuplicateTermValues_EmptyOrWhitespaceTerms_Ignored(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	csv := "term;description\n" +
+		"Apple;ok\n" +
+		"   ;empty\n" +
+		";also empty\n" +
+		"Apple;repeat\n"
 
-	// row 2 has "Apple"
-	// row 3 has "" (empty) -> should be ignored in duplicate-term check (handled by no-empty-term check)
-	// row 4 has "Apple" again -> should still count as duplicate of row 2
-	csv := "" +
-		"term;description\n" +
-		"Apple;ok\n" + // line 2
-		"   ;empty\n" + // line 3 (ignored, not counted as duplicate group)
-		"Apple;repeat\n" // line 4 (dup)
 	a := checks.Artifact{
 		Data: []byte(csv),
 		Path: "mix.csv",
 	}
 
-	res := validateWarnDuplicateTermValues(ctx, a)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
 
-	if res.OK {
-		t.Fatalf("expected OK=false because Apple repeats")
-	}
-	if res.Err != nil {
-		t.Fatalf("expected Err=nil, got %v", res.Err)
-	}
-
-	if !strings.Contains(res.Msg, `"Apple"`) {
-		t.Fatalf("expected message to include duplicated term Apple, got: %q", res.Msg)
-	}
-	if !strings.Contains(res.Msg, "2") || !strings.Contains(res.Msg, "4") {
-		t.Fatalf("expected message to mention rows 2 and 4, got: %q", res.Msg)
-	}
+	assertDuplicateWarning(t, res,
+		`"Apple" (rows 2, 5)`,
+		"total 1 duplicate terms",
+	)
 }
 
 func TestValidateWarnDuplicateTermValues_NoTermColumn_PASS(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
-	csv := "" +
-		"description;context\n" +
+	csv := "description;context\n" +
 		"foo;bar\n" +
 		"foo;baz\n"
 
@@ -175,120 +241,174 @@ func TestValidateWarnDuplicateTermValues_NoTermColumn_PASS(t *testing.T) {
 		Path: "noterm.csv",
 	}
 
-	res := validateWarnDuplicateTermValues(ctx, a)
+	res := validateWarnDuplicateTermValues(t.Context(), a)
 
 	if !res.OK {
-		t.Fatalf("expected OK=true when there's no term column, got false: %q", res.Msg)
+		t.Fatalf("expected OK=true without term column, got %q", res.Msg)
 	}
 	if res.Err != nil {
 		t.Fatalf("expected Err=nil, got %v", res.Err)
 	}
-	if !strings.Contains(res.Msg, "no 'term' column") &&
-		!strings.Contains(res.Msg, "skipping") {
-		t.Fatalf("expected 'skipping' style message, got: %q", res.Msg)
+	if !strings.Contains(res.Msg, "no 'term' column") {
+		t.Fatalf("unexpected skip message: %q", res.Msg)
 	}
 }
 
-func TestRunWarnDuplicateTermValues_EndToEnd_NoAutoFix(t *testing.T) {
+func TestRunWarnDuplicateTermValues_EndToEnd_FixModes(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
+	csv := "term;description;ru\n" +
+		"monitor;Computer display;монитор\n" +
+		"keyboard;Input device;клавиатура\n" +
+		"monitor;To observe activity;отслеживать\n"
 
-	csv := "" +
-		"term;description\n" +
-		"Apple;desc1\n" +
-		"Banana;desc2\n" +
-		"Apple;desc3\n"
-
-	a := checks.Artifact{
-		Data: []byte(csv),
-		Path: "e2e.csv",
+	tests := []struct {
+		name          string
+		fixMode       checks.FixMode
+		rerunAfterFix bool
+	}{
+		{
+			name:          "no fix",
+			fixMode:       checks.FixNone,
+			rerunAfterFix: false,
+		},
+		{
+			name:          "fix if failed",
+			fixMode:       checks.FixIfFailed,
+			rerunAfterFix: true,
+		},
+		{
+			name:          "fix if not pass",
+			fixMode:       checks.FixIfNotPass,
+			rerunAfterFix: true,
+		},
+		{
+			name:          "fix always",
+			fixMode:       checks.FixAlways,
+			rerunAfterFix: true,
+		},
 	}
 
-	out := runWarnDuplicateTermValues(ctx, a, checks.RunOptions{
-		RerunAfterFix: true,
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if out.Result.Status != checks.Warn {
-		t.Fatalf("expected status WARN, got %s (%s)", out.Result.Status, out.Result.Message)
-	}
+			a := checks.Artifact{
+				Data: []byte(csv),
+				Path: "e2e.csv",
+			}
 
-	if out.Final.DidChange {
-		t.Fatalf("expected DidChange=false (no auto-fix)")
-	}
-	if string(out.Final.Data) != string(a.Data) {
-		t.Fatalf("Final.Data must equal original Data when no fix")
-	}
-	if out.Final.Path != a.Path {
-		t.Fatalf("Final.Path must remain unchanged (got %q want %q)", out.Final.Path, a.Path)
-	}
+			out := runWarnDuplicateTermValues(
+				t.Context(),
+				a,
+				checks.RunOptions{
+					FixMode:       tt.fixMode,
+					RerunAfterFix: tt.rerunAfterFix,
+				},
+			)
 
-	if !strings.Contains(out.Result.Message, `"Apple"`) {
-		t.Fatalf("expected Result.Message to include duplicated term Apple, got: %q", out.Result.Message)
-	}
-	if !strings.Contains(out.Result.Message, "2") || !strings.Contains(out.Result.Message, "4") {
-		t.Fatalf("expected Result.Message to mention row numbers, got: %q", out.Result.Message)
-	}
-}
+			if out.Result.Status != checks.Warn {
+				t.Fatalf(
+					"expected WARN, got %s (%s)",
+					out.Result.Status,
+					out.Result.Message,
+				)
+			}
 
-func TestRunWarnDuplicateTermValues_EndToEnd_WithAutoFix(t *testing.T) {
-	t.Parallel()
+			if out.Final.DidChange {
+				t.Fatal("warning-only check must never modify the artifact")
+			}
 
-	csv := "" +
-		"term;description\n" +
-		"Apple;desc1\n" +
-		"Banana;desc2\n" +
-		"Apple;desc3\n"
+			if !slices.Equal(out.Final.Data, a.Data) {
+				t.Fatalf(
+					"Final.Data must remain unchanged.\ngot:\n%q\nwant:\n%q",
+					out.Final.Data,
+					a.Data,
+				)
+			}
 
-	a := checks.Artifact{
-		Data: []byte(csv),
-		Path: "e2e.csv",
-	}
+			if out.Final.Path != a.Path {
+				t.Fatalf(
+					"Final.Path changed: got %q, want %q",
+					out.Final.Path,
+					a.Path,
+				)
+			}
 
-	out := runWarnDuplicateTermValues(context.Background(), a, checks.RunOptions{
-		FixMode:       checks.FixIfFailed,
-		RerunAfterFix: true,
-	})
+			if !strings.Contains(
+				out.Result.Message,
+				`"monitor" (rows 2, 4)`,
+			) {
+				t.Fatalf(
+					"expected duplicate term and row numbers, got %q",
+					out.Result.Message,
+				)
+			}
 
-	if out.Result.Status != checks.Pass {
-		t.Fatalf("expected status PASS after fix, got %s (%s)", out.Result.Status, out.Result.Message)
-	}
+			if !strings.Contains(
+				out.Result.Message,
+				"Lokalise allows duplicate glossary terms",
+			) {
+				t.Fatalf(
+					"expected import risk explanation, got %q",
+					out.Result.Message,
+				)
+			}
 
-	if !out.Final.DidChange {
-		t.Fatalf("expected DidChange=true")
-	}
-
-	want := "" +
-		"term;description\n" +
-		"Apple;desc1\n" +
-		"Banana;desc2\n"
-
-	if string(out.Final.Data) != want {
-		t.Fatalf("Final.Data mismatch.\n got:\n%q\nwant:\n%q", string(out.Final.Data), want)
-	}
-
-	if out.Final.Path != a.Path {
-		t.Fatalf("Final.Path must remain unchanged (got %q want %q)", out.Final.Path, a.Path)
+			if !strings.Contains(
+				out.Result.Message,
+				"may merge entries",
+			) {
+				t.Fatalf(
+					"expected CSV import warning, got %q",
+					out.Result.Message,
+				)
+			}
+		})
 	}
 }
 
 func TestValidateWarnDuplicateTermValues_BOMBeforeHeader(t *testing.T) {
 	t.Parallel()
 
-	csv := "\xEF\xBB\xBFterm;description\nApple;one\nApple;two\n"
+	csv := "\xEF\xBB\xBFterm;description\n" +
+		"Apple;one\n" +
+		"Apple;two\n"
 
-	res := validateWarnDuplicateTermValues(context.Background(), checks.Artifact{
+	a := checks.Artifact{
 		Data: []byte(csv),
 		Path: "bom.csv",
-	})
+	}
+
+	res := validateWarnDuplicateTermValues(t.Context(), a)
+
+	assertDuplicateWarning(t, res,
+		`"Apple" (rows 2, 3)`,
+	)
+}
+
+func assertDuplicateWarning(
+	t *testing.T,
+	res checks.ValidationResult,
+	expected ...string,
+) {
+	t.Helper()
 
 	if res.OK {
-		t.Fatalf("expected duplicate warning")
+		t.Fatalf("expected duplicate warning, got OK=true: %q", res.Msg)
 	}
+
 	if res.Err != nil {
-		t.Fatalf("expected Err=nil, got %v", res.Err)
+		t.Fatalf("expected Err=nil (WARN, not ERROR), got %v", res.Err)
 	}
-	if !strings.Contains(res.Msg, `"Apple"`) {
-		t.Fatalf("expected message to include Apple, got %q", res.Msg)
+
+	if !strings.Contains(res.Msg, "duplicate term values found:") {
+		t.Fatalf("expected duplicate warning prefix, got %q", res.Msg)
+	}
+
+	for _, want := range expected {
+		if !strings.Contains(res.Msg, want) {
+			t.Errorf("expected message to contain %q, got %q", want, res.Msg)
+		}
 	}
 }

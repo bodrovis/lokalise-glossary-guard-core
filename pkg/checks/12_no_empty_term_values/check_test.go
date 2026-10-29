@@ -146,7 +146,7 @@ func TestValidateNoEmptyTermValues_TooMany_TruncatesMessage(t *testing.T) {
 	ctx := context.Background()
 	// make >10 bad rows so we test the truncation logic
 	csv := "term;description\n"
-	for i := 0; i < 15; i++ {
+	for range 15 {
 		csv += "   ;desc\n" // all invalid term (spaces only)
 	}
 
